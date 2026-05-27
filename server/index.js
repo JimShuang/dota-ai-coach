@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState } = require('./db');
 const { evaluate } = require('./rules');
+const { logEvents, getEvents, getSummary } = require('./eventLogger');
 
 const app = express();
 const PORT = 3001;
@@ -43,6 +44,12 @@ gsiApp.post('/', (req, res) => {
     console.error('Rule eval error:', err.message);
   }
 
+  try {
+    logEvents(data);
+  } catch (err) {
+    console.error('Event logger error:', err.message);
+  }
+
   res.sendStatus(200);
 });
 
@@ -64,6 +71,14 @@ app.get('/api/alerts', (req, res) => {
 
 app.get('/api/live', (req, res) => {
   res.json(latestGSI || null);
+});
+
+app.get('/api/events', (req, res) => {
+  res.json(getEvents());
+});
+
+app.get('/api/summary', (req, res) => {
+  res.json(getSummary() || null);
 });
 
 app.get('/api/health', (req, res) => {

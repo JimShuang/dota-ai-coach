@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import GameState from './components/GameState';
 import Alerts from './components/Alerts';
 import GoldChart from './components/GoldChart';
+import EventTimeline from './components/EventTimeline';
 
 const styles = {
   app: {
@@ -49,23 +50,31 @@ export default function App() {
   const [gameState, setGameState] = useState(null);
   const [alerts, setAlerts] = useState([]);
   const [history, setHistory] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [connected, setConnected] = useState(false);
 
   const fetchData = useCallback(async () => {
     try {
-      const [stateRes, alertsRes, historyRes] = await Promise.all([
+      const [stateRes, alertsRes, historyRes, eventsRes, summaryRes] = await Promise.all([
         fetch('/api/state'),
         fetch('/api/alerts?limit=15'),
         fetch('/api/states?limit=30'),
+        fetch('/api/events'),
+        fetch('/api/summary'),
       ]);
-      const [stateData, alertsData, historyData] = await Promise.all([
+      const [stateData, alertsData, historyData, eventsData, summaryData] = await Promise.all([
         stateRes.json(),
         alertsRes.json(),
         historyRes.json(),
+        eventsRes.json(),
+        summaryRes.json(),
       ]);
       setGameState(stateData);
       setAlerts(alertsData);
       setHistory(historyData.reverse());
+      setEvents(eventsData);
+      setSummary(summaryData);
       setConnected(true);
     } catch {
       setConnected(false);
@@ -98,6 +107,9 @@ export default function App() {
         <Alerts alerts={alerts} />
         <div style={styles.fullWidth}>
           <GoldChart history={history} />
+        </div>
+        <div style={styles.fullWidth}>
+          <EventTimeline events={events} summary={summary} />
         </div>
       </div>
     </div>
