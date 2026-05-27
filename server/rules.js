@@ -66,7 +66,7 @@ const RULES = [
       const wardCount = allItems.filter(
         (i) => i && (i.name === 'item_ward_observer' || i.name === 'item_ward_sentry')
       ).length;
-      if (clock > 120 && wardCount === 0 && player.team_name === 'dire' || player.team_name === 'radiant') {
+      if (clock > 120 && wardCount === 0 && (player.team_name === 'dire' || player.team_name === 'radiant')) {
         return { message: '背包中没有视野道具，记得购买插眼', severity: 'info' };
       }
       return null;
@@ -88,7 +88,7 @@ const RULES = [
     id: 'teleport_scroll',
     check(data) {
       const items = data.items || {};
-      const allItems = Object.values(items.slot || {});
+      const allItems = [...Object.values(items.slot || {}), ...Object.values(items.stash || {})];
       const hasTp = allItems.some((i) => i && i.name === 'item_tpscroll');
       const clock = data.map?.clock_time || 0;
       if (clock > 300 && !hasTp) {
