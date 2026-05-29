@@ -1,6 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState } = require('./db');
+const { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getStatesByMatch } = require('./db');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getSummary } = require('./eventLogger');
 
@@ -71,6 +71,12 @@ app.get('/api/alerts', (req, res) => {
 
 app.get('/api/live', (req, res) => {
   res.json(latestGSI || null);
+});
+
+app.get('/api/states/:matchId', (req, res) => {
+  const from = parseInt(req.query.from) || 0;
+  const to   = parseInt(req.query.to)   || 99999;
+  res.json(getStatesByMatch(req.params.matchId, from, to));
 });
 
 app.get('/api/events', (req, res) => {

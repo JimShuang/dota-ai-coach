@@ -162,7 +162,7 @@ function detectGpmDrop(data, clock) {
 function detectGameEnd(data, clock) {
   if (data.map?.game_state !== 'DOTA_GAMERULES_STATE_POST_GAME') return;
   if (lastEventOfType('game_end')) return;
-  const win = data.player?.win;
+  const win = data.map?.win_team && data.map.win_team === data.player?.team_name;
   push({
     game_time: clock,
     type: 'game_end',

@@ -94,4 +94,10 @@ function getMatchAlerts(matchId) {
   return db.prepare('SELECT * FROM alerts WHERE match_id = ? ORDER BY clock_time ASC').all(matchId);
 }
 
-module.exports = { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getMatchAlerts };
+function getStatesByMatch(matchId, fromClock, toClock) {
+  return db.prepare(
+    'SELECT clock_time, raw_json FROM game_states WHERE match_id = ? AND clock_time BETWEEN ? AND ? ORDER BY clock_time'
+  ).all(matchId, fromClock ?? 0, toClock ?? 99999);
+}
+
+module.exports = { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch };
