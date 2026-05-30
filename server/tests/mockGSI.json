@@ -1,0 +1,41 @@
+{
+  "_comment": "Mock GSI payload for Centaur Warrunner at 10 min mark. POST to http://localhost:3000/",
+  "map": {
+    "matchid": "mock_match_001",
+    "clock_time": 600,
+    "game_state": "DOTA_GAMERULES_STATE_GAME_IN_PROGRESS",
+    "name": "start",
+    "win_team": "",
+    "roshan_state": "alive"
+  },
+  "player": {
+    "gold": 1400,
+    "net_worth": 5800,
+    "kills": 1,
+    "deaths": 1,
+    "assists": 2,
+    "last_hits": 52,
+    "denies": 4,
+    "gpm": 420,
+    "xpm": 390,
+    "buyback_cost": 1000,
+    "buyback_cooldown_time": 0,
+    "team_name": "radiant"
+  },
+  "hero": {
+    "name": "npc_dota_hero_centaur",
+    "level": 9,
+    "alive": true
+  },
+  "items": {
+    "slot": {
+      "slot0": { "name": "item_vanguard" },
+      "slot1": { "name": "item_tpscroll" },
+      "slot2": { "name": "item_bracer" },
+      "slot3": null,
+      "slot4": null,
+      "slot5": null
+    },
+    "stash": {}
+  }
+}
