@@ -1,11 +1,16 @@
 const express = require('express');
 const cors = require('cors');
-const { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getStatesByMatch } = require('./db');
+const {
+  saveGameState, saveAlert,
+  getRecentStates, getRecentAlerts, getLatestState, getStatesByMatch,
+  getMatches, getMatchById, getLongTermStats,
+} = require('./db');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { getConfig, setConfig } = require('./matchConfig');
 const { PROFILES, getProfileByDotaName, getProfileKey } = require('./data/offlaneHeroProfiles');
 const { suggestKeyItem } = require('./suggestKeyItem');
+const { persistMatch } = require('./matchHistory');
 
 const app = express();
 const PORT = 3001;
@@ -32,7 +37,6 @@ function buildCtx(data) {
   const heroProfile = getProfileByDotaName(dotaHeroName);
   const heroKey = config.heroKey || getProfileKey(dotaHeroName);
 
-  // Auto-sync hero into config when GSI detects a supported hero
   if (heroKey && heroKey !== config.heroKey) {
     setConfig({ hero: dotaHeroName, heroKey });
   }
@@ -42,14 +46,12 @@ function buildCtx(data) {
     ? suggestKeyItem(heroKey, currentItems, data.map?.clock_time || 0, config.keyItemOverride)
     : null;
 
-  return {
-    config,
-    heroProfile,
-    heroKey,
-    suggested,
-    getPowerSpikeState,
-  };
+  return { config, heroProfile, heroKey, suggested, getPowerSpikeState };
 }
+
+// ── Match start time tracking ──────────────────────────────────────────────
+// Real-world timestamps keyed by matchId, used to compute duration.
+const matchStartTimes = new Map();
 
 // ── GSI endpoint (Dota 2 posts here) ──────────────────────────────────────
 const gsiApp = express();
@@ -66,6 +68,12 @@ gsiApp.post('/', (req, res) => {
   }
 
   latestGSI = data;
+  const matchId = String(data.map?.matchid || '0');
+
+  // Record match start time on first tick for this match
+  if (!matchStartTimes.has(matchId)) {
+    matchStartTimes.set(matchId, Date.now());
+  }
 
   try {
     saveGameState(data);
@@ -89,6 +97,25 @@ gsiApp.post('/', (req, res) => {
     logEvents(data, ctx);
   } catch (err) {
     console.error('Event logger error:', err.message);
+  }
+
+  // Persist match summary once when game reaches post-game state
+  if (gameState === 'DOTA_GAMERULES_STATE_POST_GAME') {
+    try {
+      const summary = getOfflanieSummary(ctx.heroProfile);
+      if (summary) {
+        persistMatch({
+          matchId,
+          summary,
+          allEvents: getEvents(),
+          config: { ...ctx.config, keyItemOverride: ctx.config.keyItemOverride },
+          heroProfile: ctx.heroProfile,
+          startRealTime: matchStartTimes.get(matchId),
+        });
+      }
+    } catch (err) {
+      console.error('Match persist error:', err.message);
+    }
   }
 
   res.sendStatus(200);
@@ -167,6 +194,24 @@ app.get('/api/postgame-summary', (req, res) => {
   const config = getConfig();
   const heroProfile = config.hero ? getProfileByDotaName(config.hero) : null;
   res.json(getOfflanieSummary(heroProfile) || null);
+});
+
+// ── Match history ──────────────────────────────────────────────────────────
+
+app.get('/api/history/matches', (req, res) => {
+  const limit = parseInt(req.query.limit) || 50;
+  res.json(getMatches(limit));
+});
+
+app.get('/api/history/matches/:matchId', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+  res.json(detail);
+});
+
+app.get('/api/history/stats', (req, res) => {
+  const recentCount = parseInt(req.query.recent) || 10;
+  res.json(getLongTermStats(recentCount));
 });
 
 app.get('/api/health', (req, res) => {

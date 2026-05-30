@@ -54,7 +54,7 @@ console.log('\nUser override:');
 const r7 = suggestKeyItem('centaur', [], 0, 'item_pipe');
 assert(r7?.suggestedKeyItem === 'item_pipe', 'override respected regardless of progression');
 assert(r7?.reason === '用户自定义', 'override sets reason to 用户自定义');
-assert(r7?.displayName === 'Pipe of Insight', 'display name resolved for override');
+assert(r7?.displayName === '洞察烟斗（Pipe of Insight）', 'display name resolved for override');
 
 // Override takes priority even when all items owned
 const r8 = suggestKeyItem('centaur', allCentaur, 3000, 'item_blink');
@@ -73,11 +73,11 @@ assert(r10 === null, 'empty heroKey returns null');
 console.log('\nDisplay names:');
 
 const r11 = suggestKeyItem('razor', [], 0, null);
-assert(r11?.displayName === 'Hood of Defiance', 'Razor first item has correct display name');
+assert(r11?.displayName === '抗魔斗篷（Hood of Defiance）', 'Razor first item has correct display name');
 
 const r12 = suggestKeyItem('vengefulspirit', [], 0, null);
 assert(r12?.suggestedKeyItem === 'item_force_staff', 'VS first item is Force Staff');
-assert(r12?.displayName === 'Force Staff', 'VS Force Staff display name correct');
+assert(r12?.displayName === '推推棒（Force Staff）', 'VS Force Staff display name correct');
 
 // ── Summary ───────────────────────────────────────────────────────────────
 console.log(`\n${'─'.repeat(50)}`);

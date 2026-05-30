@@ -34,6 +34,57 @@ db.exec(`
     severity TEXT DEFAULT 'info',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS matches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id TEXT UNIQUE,
+    hero TEXT,
+    role TEXT DEFAULT 'offlane',
+    archetype TEXT,
+    playstyle TEXT,
+    result TEXT,
+    start_time INTEGER,
+    end_time INTEGER,
+    duration INTEGER,
+    kills INTEGER DEFAULT 0,
+    deaths INTEGER DEFAULT 0,
+    assists INTEGER DEFAULT 0,
+    gpm REAL DEFAULT 0,
+    xpm REAL DEFAULT 0,
+    last_hits INTEGER DEFAULT 0,
+    denies INTEGER DEFAULT 0,
+    final_gold INTEGER DEFAULT 0,
+    suggested_key_item TEXT,
+    user_override_key_item TEXT,
+    overall_grade TEXT,
+    one_thing_to_improve TEXT,
+    pre_key_item_deaths INTEGER DEFAULT 0,
+    spike_unused_count INTEGER DEFAULT 0,
+    low_farm_windows INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS match_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id TEXT,
+    game_time INTEGER,
+    type TEXT,
+    severity TEXT,
+    message TEXT,
+    snapshot_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS key_item_timings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    match_id TEXT,
+    item_name TEXT,
+    completed INTEGER DEFAULT 0,
+    completed_time INTEGER,
+    deaths_before_completion INTEGER DEFAULT 0,
+    power_spike_used INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 function saveGameState(data) {
@@ -100,4 +151,100 @@ function getStatesByMatch(matchId, fromClock, toClock) {
   ).all(matchId, fromClock ?? 0, toClock ?? 99999);
 }
 
-module.exports = { saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch };
+// ── Match history ──────────────────────────────────────────────────────────
+
+function matchExists(matchId) {
+  return !!db.prepare('SELECT 1 FROM matches WHERE match_id = ?').get(matchId);
+}
+
+function saveMatch(row) {
+  return db.prepare(`
+    INSERT OR IGNORE INTO matches
+      (match_id, hero, role, archetype, playstyle, result,
+       start_time, end_time, duration,
+       kills, deaths, assists, gpm, xpm, last_hits, denies, final_gold,
+       suggested_key_item, user_override_key_item,
+       overall_grade, one_thing_to_improve,
+       pre_key_item_deaths, spike_unused_count, low_farm_windows)
+    VALUES
+      (@match_id, @hero, @role, @archetype, @playstyle, @result,
+       @start_time, @end_time, @duration,
+       @kills, @deaths, @assists, @gpm, @xpm, @last_hits, @denies, @final_gold,
+       @suggested_key_item, @user_override_key_item,
+       @overall_grade, @one_thing_to_improve,
+       @pre_key_item_deaths, @spike_unused_count, @low_farm_windows)
+  `).run(row);
+}
+
+function saveMatchEvents(matchId, events) {
+  const stmt = db.prepare(
+    'INSERT INTO match_events (match_id, game_time, type, severity, message, snapshot_json) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  db.transaction((evts) => {
+    for (const e of evts) {
+      stmt.run(matchId, e.game_time, e.type, e.severity, e.message, JSON.stringify(e.snapshot ?? null));
+    }
+  })(events);
+}
+
+function saveKeyItemTimings(matchId, timings) {
+  const stmt = db.prepare(
+    'INSERT INTO key_item_timings (match_id, item_name, completed, completed_time, deaths_before_completion, power_spike_used) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  db.transaction((rows) => {
+    for (const t of rows) {
+      stmt.run(matchId, t.item_name, t.completed, t.completed_time ?? null, t.deaths_before_completion, t.power_spike_used);
+    }
+  })(timings);
+}
+
+function getMatches(limit = 50) {
+  return db.prepare('SELECT * FROM matches ORDER BY id DESC LIMIT ?').all(limit);
+}
+
+function getMatchById(matchId) {
+  const match = db.prepare('SELECT * FROM matches WHERE match_id = ?').get(matchId);
+  if (!match) return null;
+  const events = db.prepare('SELECT * FROM match_events WHERE match_id = ? ORDER BY game_time ASC').all(matchId)
+    .map((e) => ({ ...e, snapshot: e.snapshot_json ? JSON.parse(e.snapshot_json) : null }));
+  const keyItemTimings = db.prepare('SELECT * FROM key_item_timings WHERE match_id = ? ORDER BY id ASC').all(matchId);
+  return { match, events, keyItemTimings };
+}
+
+function getLongTermStats(recentCount = 10) {
+  const total = db.prepare('SELECT COUNT(*) as n FROM matches').get()?.n || 0;
+  if (total === 0) return { total_matches: 0, recent: null, hero_usage: [], top_improvement: null };
+
+  const recent = db.prepare(`
+    SELECT
+      ROUND(AVG(deaths), 2)              as avg_deaths,
+      ROUND(AVG(gpm), 0)                 as avg_gpm,
+      ROUND(AVG(xpm), 0)                 as avg_xpm,
+      ROUND(AVG(pre_key_item_deaths), 2) as avg_pre_key_item_deaths,
+      ROUND(AVG(spike_unused_count), 2)  as avg_spike_unused,
+      ROUND(AVG(low_farm_windows), 2)    as avg_low_farm_windows
+    FROM (SELECT * FROM matches ORDER BY id DESC LIMIT ?)
+  `).get(recentCount);
+
+  const heroUsage = db.prepare(
+    'SELECT hero, COUNT(*) as count FROM matches WHERE hero IS NOT NULL GROUP BY hero ORDER BY count DESC'
+  ).all();
+
+  const topImprovement = db.prepare(
+    'SELECT one_thing_to_improve, COUNT(*) as count FROM matches WHERE one_thing_to_improve IS NOT NULL GROUP BY one_thing_to_improve ORDER BY count DESC LIMIT 1'
+  ).get();
+
+  return {
+    total_matches: total,
+    recent_count: recentCount,
+    recent,
+    hero_usage: heroUsage,
+    top_improvement: topImprovement?.one_thing_to_improve || null,
+  };
+}
+
+module.exports = {
+  saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
+  matchExists, saveMatch, saveMatchEvents, saveKeyItemTimings,
+  getMatches, getMatchById, getLongTermStats,
+};

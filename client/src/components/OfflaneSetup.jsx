@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { heroDisplayName, itemDisplayName } from '../heroItemNames';
 
 const card = {
   background: '#161b22',
@@ -107,9 +108,14 @@ export default function OfflaneSetup({ matchConfig, onConfigSaved }) {
   const archetype = ARCHETYPE_LABELS[profile?.archetype];
   const keyItemList = profile?.keyItems || [];
 
-  function formatHeroName(dotaName) {
-    if (!dotaName) return '等待英雄选择';
-    return dotaName.replace('npc_dota_hero_', '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+  function currentHeroLabel() {
+    if (profile) {
+      return profile.heroNameZh
+        ? `${profile.heroNameZh}（${profile.heroName}）`
+        : profile.heroName;
+    }
+    if (matchConfig?.hero) return heroDisplayName(matchConfig.hero);
+    return '等待英雄选择';
   }
 
   return (
@@ -120,7 +126,7 @@ export default function OfflaneSetup({ matchConfig, onConfigSaved }) {
       <Row label="当前英雄">
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <span style={{ fontSize: '14px', fontWeight: '700', color: '#f0883e' }}>
-            {profile ? profile.heroName : formatHeroName(matchConfig?.hero)}
+            {currentHeroLabel()}
           </span>
           {archetype && <Badge text={archetype.label} color={archetype.color} />}
           {!profile && matchConfig?.hero && (
@@ -171,7 +177,7 @@ export default function OfflaneSetup({ matchConfig, onConfigSaved }) {
             <option value="">自动（根据进度推断）</option>
             {keyItemList.map((item) => (
               <option key={item} value={item}>
-                {item.replace('item_', '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                {itemDisplayName(item)}
               </option>
             ))}
           </select>
@@ -221,7 +227,7 @@ export default function OfflaneSetup({ matchConfig, onConfigSaved }) {
                       fontWeight: isCurrent ? '700' : '400',
                     }}
                   >
-                    {item.replace('item_', '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                    {itemDisplayName(item)}
                   </span>
                   {idx < keyItemList.length - 1 && (
                     <span style={{ color: '#30363d', fontSize: '12px' }}>→</span>

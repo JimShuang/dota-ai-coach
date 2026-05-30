@@ -47,6 +47,9 @@ C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game\dota\cfg\gamestat
 | API (对局配置) | http://localhost:3001/api/match/config |
 | API (英雄档案) | http://localhost:3001/api/hero-profiles |
 | API (历史帧) | http://localhost:3001/api/states/:matchId?from=600&to=660 |
+| API (历史记录列表) | http://localhost:3001/api/history/matches?limit=50 |
+| API (历史记录详情) | http://localhost:3001/api/history/matches/:matchId |
+| API (长期统计) | http://localhost:3001/api/history/stats?recent=10 |
 | GSI 接收端 | http://localhost:3000/ |
 
 ---
@@ -178,11 +181,32 @@ GET /api/states/{matchId}?from=600&to=660
 
 ---
 
+## 历史比赛存储
+
+每局比赛结束（`game_state = POST_GAME`）自动持久化到 SQLite：
+
+### 数据库表
+
+| 表 | 内容 |
+|----|------|
+| `matches` | 每局汇总：英雄、结果、K/D/A、GPM/XPM、评级、改进点、Offlane 专项指标 |
+| `match_events` | 完整事件时间线（所有 10 种事件类型），含 snapshot JSON |
+| `key_item_timings` | 每件关键装备的完成状态、完成时间、完成前死亡次数、强势期利用情况 |
+
+### Dashboard 标签页
+
+- **实时对局**：现有实时面板（GameState / Alerts / OfflaneSetup / GoldChart / EventTimeline）
+- **历史记录**：比赛列表 + 点击查看每局详情（统计、死亡分析、装备时间线、完整事件流）
+- **长期趋势**：近 N 局均值（死亡 / GPM / XPM / Offlane 专项）、英雄使用频率、最常见改进点
+
+---
+
 ## 单元测试
 
 ```bash
 cd server
 node tests/suggestKeyItem.test.js   # 18 个断言，纯函数测试
+node tests/matchHistory.test.js     # 44 个断言，computeKeyItemTimings + DB 读写
 ```
 
 ---
@@ -193,11 +217,13 @@ node tests/suggestKeyItem.test.js   # 18 个断言，纯函数测试
 dota-ai-coach/
 ├── server/
 │   ├── index.js                    # Express 服务器 (端口 3000/3001)
-│   ├── db.js                       # SQLite 数据层
+│   ├── db.js                       # SQLite 数据层（含历史表 + CRUD）
 │   ├── rules.js                    # 规则引擎入口 (协调器)
 │   ├── eventLogger.js              # 事件记录模块
 │   ├── matchConfig.js              # 对局配置（内存状态）
+│   ├── matchHistory.js             # 比赛持久化（persistMatch + 装备时间线计算）
 │   ├── suggestKeyItem.js           # 关键装备推断（纯函数）
+│   ├── coach.db                    # SQLite 数据库（自动创建）
 │   ├── data/
 │   │   └── offlaneHeroProfiles.js  # 7 英雄档案 + 装备费用
 │   ├── rules/
@@ -205,15 +231,18 @@ dota-ai-coach/
 │   │   ├── offlaneRules.js         # Offlane 专用规则
 │   │   └── archetypeRules.js       # Archetype 专项规则
 │   └── tests/
-│       ├── suggestKeyItem.test.js  # 纯函数单元测试
+│       ├── suggestKeyItem.test.js  # 纯函数单元测试（18 断言）
+│       ├── matchHistory.test.js    # 历史存储单元测试（44 断言）
 │       └── mockGSI.json            # 模拟 GSI payload
 ├── client/src/
-│   ├── App.jsx
+│   ├── App.jsx                     # 三标签页导航（实时/历史/趋势）
 │   └── components/
 │       ├── GameState.jsx           # 对局状态面板
 │       ├── Alerts.jsx              # 实时提醒列表
 │       ├── GoldChart.jsx           # 金币走势图表
 │       ├── OfflaneSetup.jsx        # Offlane 设置 + 关键装备推断
-│       └── EventTimeline.jsx       # 事件时间线 + 赛后复盘
+│       ├── EventTimeline.jsx       # 事件时间线 + 赛后复盘
+│       ├── MatchHistory.jsx        # 历史比赛列表 + 详情页
+│       └── LongTermTrends.jsx      # 长期趋势统计
 └── gamestate_integration_coach.cfg
 ```

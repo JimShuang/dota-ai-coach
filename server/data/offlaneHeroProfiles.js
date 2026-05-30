@@ -23,24 +23,24 @@ const ITEM_COSTS = {
 };
 
 const ITEM_DISPLAY_NAMES = {
-  item_vanguard:         'Vanguard',
-  item_blink:            'Blink Dagger',
-  item_pipe:             'Pipe of Insight',
-  item_crimson_guard:    'Crimson Guard',
-  item_black_king_bar:   'Black King Bar',
-  item_blade_mail:       'Blade Mail',
-  item_hood_of_defiance: 'Hood of Defiance',
-  item_eternal_shroud:   'Eternal Shroud',
-  item_aghanims_scepter: "Aghanim's Scepter",
-  item_kaya_and_sange:   'Kaya and Sange',
-  item_force_staff:      'Force Staff',
-  item_glimmer_cape:     'Glimmer Cape',
-  item_mekansm:          'Mekansm',
-  item_guardian_greaves: 'Guardian Greaves',
-  item_lotus_orb:        'Lotus Orb',
-  item_assault:          'Assault Cuirass',
-  item_rod_of_atos:      'Rod of Atos',
-  item_shivas_guard:     "Shiva's Guard",
+  item_vanguard:         '先锋盾（Vanguard）',
+  item_blink:            '闪烁匕首（Blink Dagger）',
+  item_pipe:             '洞察烟斗（Pipe of Insight）',
+  item_crimson_guard:    '猩红卫士（Crimson Guard）',
+  item_black_king_bar:   '黑皇杖（Black King Bar）',
+  item_blade_mail:       '刃甲（Blade Mail）',
+  item_hood_of_defiance: '抗魔斗篷（Hood of Defiance）',
+  item_eternal_shroud:   '永恒裹布（Eternal Shroud）',
+  item_aghanims_scepter: '阿哈利姆神杖（Aghanim\'s Scepter）',
+  item_kaya_and_sange:   '凯亚与桑格（Kaya and Sange）',
+  item_force_staff:      '推推棒（Force Staff）',
+  item_glimmer_cape:     '闪烁斗篷（Glimmer Cape）',
+  item_mekansm:          '梅肯斯姆（Mekansm）',
+  item_guardian_greaves: '守护者护胫（Guardian Greaves）',
+  item_lotus_orb:        '莲花宝珠（Lotus Orb）',
+  item_assault:          '强袭胸甲（Assault Cuirass）',
+  item_rod_of_atos:      '阿托斯之棒（Rod of Atos）',
+  item_shivas_guard:     '希瓦的守护（Shiva\'s Guard）',
 };
 
 // Archetype categories:
@@ -52,6 +52,7 @@ const ITEM_DISPLAY_NAMES = {
 const PROFILES = {
   necrophos: {
     heroName:          'Necrophos',
+    heroNameZh:        '死灵法师',
     dotaHeroName:      'npc_dota_hero_necrolyte',
     archetype:         'lane_bully_tempo',
     // Ordered progression — suggest the first item the player doesn't own
@@ -62,6 +63,7 @@ const PROFILES = {
   },
   razor: {
     heroName:          'Razor',
+    heroNameZh:        '电魂',
     dotaHeroName:      'npc_dota_hero_razor',
     archetype:         'lane_bully_tempo',
     keyItems:          ['item_hood_of_defiance', 'item_blade_mail', 'item_black_king_bar', 'item_assault'],
@@ -71,6 +73,7 @@ const PROFILES = {
   },
   viper: {
     heroName:          'Viper',
+    heroNameZh:        '冥毒蛇',
     dotaHeroName:      'npc_dota_hero_viper',
     archetype:         'lane_bully_tempo',
     keyItems:          ['item_hood_of_defiance', 'item_aghanims_scepter', 'item_pipe', 'item_rod_of_atos'],
@@ -80,6 +83,7 @@ const PROFILES = {
   },
   tidehunter: {
     heroName:          'Tidehunter',
+    heroNameZh:        '潮汐猎手',
     dotaHeroName:      'npc_dota_hero_tidehunter',
     archetype:         'teamfight_initiator',
     keyItems:          ['item_vanguard', 'item_blink', 'item_pipe', 'item_crimson_guard'],
@@ -89,6 +93,7 @@ const PROFILES = {
   },
   vengefulspirit: {
     heroName:          'Vengeful Spirit',
+    heroNameZh:        '复仇之魂',
     dotaHeroName:      'npc_dota_hero_vengefulspirit',
     archetype:         'utility_save_initiator',
     keyItems:          ['item_force_staff', 'item_glimmer_cape', 'item_aghanims_scepter', 'item_black_king_bar'],
@@ -98,6 +103,7 @@ const PROFILES = {
   },
   abaddon: {
     heroName:          'Abaddon',
+    heroNameZh:        '亚巴顿',
     dotaHeroName:      'npc_dota_hero_abaddon',
     archetype:         'aura_tank_save',
     keyItems:          ['item_mekansm', 'item_guardian_greaves', 'item_pipe', 'item_lotus_orb'],
@@ -107,6 +113,7 @@ const PROFILES = {
   },
   centaur: {
     heroName:          'Centaur Warrunner',
+    heroNameZh:        '半人马战行者',
     dotaHeroName:      'npc_dota_hero_centaur',
     archetype:         'teamfight_initiator',
     keyItems:          ['item_vanguard', 'item_blink', 'item_pipe', 'item_crimson_guard'],

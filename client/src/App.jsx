@@ -4,6 +4,8 @@ import Alerts from './components/Alerts';
 import GoldChart from './components/GoldChart';
 import EventTimeline from './components/EventTimeline';
 import OfflaneSetup from './components/OfflaneSetup';
+import MatchHistory from './components/MatchHistory';
+import LongTermTrends from './components/LongTermTrends';
 
 const styles = {
   app: {
@@ -15,12 +17,13 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     gap: '12px',
-    marginBottom: '24px',
+    marginBottom: '20px',
     borderBottom: '1px solid #30363d',
     paddingBottom: '16px',
+    flexWrap: 'wrap',
   },
   title: {
-    fontSize: '24px',
+    fontSize: '22px',
     fontWeight: '700',
     color: '#f0883e',
     letterSpacing: '1px',
@@ -41,13 +44,19 @@ const styles = {
     gridColumn: '1 / -1',
   },
   status: {
-    marginLeft: 'auto',
     fontSize: '13px',
     color: '#8b949e',
   },
 };
 
+const TABS = [
+  { id: 'live',    label: '实时对局' },
+  { id: 'history', label: '历史记录' },
+  { id: 'trends',  label: '长期趋势' },
+];
+
 export default function App() {
+  const [activeTab, setActiveTab]     = useState('live');
   const [gameState, setGameState]     = useState(null);
   const [alerts, setAlerts]           = useState([]);
   const [history, setHistory]         = useState([]);
@@ -100,33 +109,65 @@ export default function App() {
 
   return (
     <div style={styles.app}>
+      {/* Header */}
       <div style={styles.header}>
-        <span style={{ fontSize: '28px' }}>🎮</span>
+        <span style={{ fontSize: '26px' }}>🎮</span>
         <h1 style={styles.title}>DOTA 2 AI COACH · OFFLANE</h1>
         <span style={badgeStyle}>{connected ? '● 已连接' : '○ 未连接'}</span>
         <span style={styles.status}>每 2 秒刷新</span>
+
+        {/* Tab navigation */}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
+          {TABS.map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                style={{
+                  padding: '6px 16px',
+                  borderRadius: '8px',
+                  border: `1px solid ${active ? '#f0883e' : '#30363d'}`,
+                  background: active ? '#f0883e22' : 'transparent',
+                  color: active ? '#f0883e' : '#8b949e',
+                  fontSize: '13px',
+                  fontWeight: active ? '600' : '400',
+                  cursor: 'pointer',
+                }}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <div style={styles.grid}>
-        {/* Row 1: game state + alerts */}
-        <GameState state={gameState} />
-        <Alerts alerts={alerts} />
-
-        {/* Row 2: offlane setup (full width) */}
-        <div style={styles.fullWidth}>
-          <OfflaneSetup matchConfig={matchConfig} onConfigSaved={fetchData} />
+      {/* Tab: 实时对局 */}
+      {activeTab === 'live' && (
+        <div style={styles.grid}>
+          <GameState state={gameState} />
+          <Alerts alerts={alerts} />
+          <div style={styles.fullWidth}>
+            <OfflaneSetup matchConfig={matchConfig} onConfigSaved={fetchData} />
+          </div>
+          <div style={styles.fullWidth}>
+            <GoldChart history={history} />
+          </div>
+          <div style={styles.fullWidth}>
+            <EventTimeline events={events} summary={summary} />
+          </div>
         </div>
+      )}
 
-        {/* Row 3: gold chart (full width) */}
-        <div style={styles.fullWidth}>
-          <GoldChart history={history} />
-        </div>
+      {/* Tab: 历史记录 */}
+      {activeTab === 'history' && (
+        <MatchHistory />
+      )}
 
-        {/* Row 4: event timeline + post-game summary (full width) */}
-        <div style={styles.fullWidth}>
-          <EventTimeline events={events} summary={summary} />
-        </div>
-      </div>
+      {/* Tab: 长期趋势 */}
+      {activeTab === 'trends' && (
+        <LongTermTrends />
+      )}
     </div>
   );
 }
