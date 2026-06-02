@@ -202,6 +202,9 @@ matches (id, match_id UNIQUE, hero, role, archetype, playstyle, result,
          suggested_key_item, user_override_key_item,
          overall_grade, one_thing_to_improve,
          pre_key_item_deaths, spike_unused_count, low_farm_windows,
+         is_excluded INTEGER DEFAULT 0,   -- Exclude Match feature
+         excluded_at TEXT,                -- datetime('now') when excluded
+         excluded_reason TEXT,            -- bot_test | unranked | development_test | corrupted_data | duplicate | other
          created_at)
 
 -- Event timeline per match (all 10 types)
@@ -252,6 +255,9 @@ The server uses `require()` / `module.exports` throughout. VS Code shows a 80001
 ### 10. Test isolation via matchId
 `eventLogger.test.js` uses `resetForMatch(uniqueId)` at the start of each test group. Tests must use distinct match IDs to avoid state bleed between groups.
 
+### 11. Exclude Match never deletes raw data
+`excludeMatch()` only sets `is_excluded = 1` on the `matches` row. All associated `match_events` and `key_item_timings` rows are intentionally left untouched. Excluded matches are hidden from `getMatches()` (default) and all `getLongTermStats()` sub-queries, but `getMatchById()` still returns full detail regardless of exclusion state.
+
 ---
 
 ## Test suite
@@ -259,13 +265,13 @@ The server uses `require()` / `module.exports` throughout. VS Code shows a 80001
 ```
 server/tests/
   suggestKeyItem.test.js   18 assertions — pure function, no I/O
-  matchHistory.test.js     61 assertions — computeKeyItemTimings + SQLite round-trip
+  matchHistory.test.js     79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
   eventLogger.test.js      53 assertions — death snapshot, item fields, normalizeItems
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 132 assertions must pass before merging any change.
+All 150 assertions must pass before merging any change.
 
 ---
 
@@ -282,6 +288,42 @@ All 132 assertions must pass before merging any change.
 5. Add `ITEM_COSTS` entries for any new key items.
 6. Add hero to `HERO_ZH` in `client/src/heroItemNames.js`.
 7. Optionally add archetype-specific rules to `server/rules/archetypeRules.js`.
+
+---
+
+## Exclude Match feature
+
+Allows users to mark specific matches as excluded so they don't pollute stats (e.g., bot games, dev tests, corrupted data).
+
+### Data safety invariant
+**Never deletes events or timings.** Only `matches.is_excluded` changes. All `match_events` and `key_item_timings` rows are preserved.
+
+### API
+
+| Method | Route | Body | Effect |
+|--------|-------|------|--------|
+| `GET` | `/api/history/matches?includeExcluded=true` | — | Returns all matches including excluded |
+| `POST` | `/api/history/matches/:matchId/exclude` | `{ reason }` | Sets `is_excluded=1`, records `excluded_at` and `excluded_reason` |
+| `POST` | `/api/history/matches/:matchId/include` | — | Resets `is_excluded=0`, clears `excluded_at`/`excluded_reason` |
+
+Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_data`, `duplicate`, `other`.
+
+### DB functions (`server/db.js`)
+
+- `excludeMatch(matchId, reason)` — UPDATE only; returns `{ changes }` (0 if not found)
+- `includeMatch(matchId)` — reverses exclusion
+- `getMatches(limit, includeExcluded=false)` — filters `WHERE is_excluded = 0` by default
+- `getLongTermStats(recentCount)` — all sub-queries filter `AND is_excluded = 0`
+
+### UI (`client/src/components/MatchHistory.jsx`)
+
+- **"显示已排除" checkbox** at top of list — re-fetches with `includeExcluded=true`
+- **Excluded match rows** — 55% opacity, "已排除" badge, no click-through to detail, "恢复" button
+- **Non-excluded rows** — "排除" button (stops propagation so row click still works)
+- **Exclude dialog** — fixed overlay modal with reason `<select>` dropdown + confirm/cancel
+
+### Migration
+`server/db.js` runs `ALTER TABLE matches ADD COLUMN ...` (with try-catch) on startup so existing `coach.db` files without the new columns are migrated automatically.
 
 ---
 
@@ -332,7 +374,7 @@ dota-ai-coach/
 │   │   └── itemProgression.js         ← extractItemStateForProgression() (pure)
 │   └── tests/
 │       ├── eventLogger.test.js        ← 53 assertions
-│       ├── matchHistory.test.js       ← 61 assertions
+│       ├── matchHistory.test.js       ← 79 assertions
 │       ├── suggestKeyItem.test.js     ← 18 assertions
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/

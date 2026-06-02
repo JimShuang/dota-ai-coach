@@ -47,6 +47,9 @@ db.exec(`
     pre_key_item_deaths INTEGER DEFAULT 0,
     spike_unused_count INTEGER DEFAULT 0,
     low_farm_windows INTEGER DEFAULT 0,
+    is_excluded INTEGER DEFAULT 0,
+    excluded_at TEXT,
+    excluded_reason TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -123,6 +126,52 @@ function getMatchById(matchId) {
     .map((e) => ({ ...e, snapshot: e.snapshot_json ? JSON.parse(e.snapshot_json) : null }));
   const keyItemTimings = db.prepare('SELECT * FROM key_item_timings WHERE match_id = ? ORDER BY id ASC').all(matchId);
   return { match, events, keyItemTimings };
+}
+
+function excludeMatch(matchId, reason) {
+  return db.prepare(
+    "UPDATE matches SET is_excluded = 1, excluded_at = datetime('now'), excluded_reason = ? WHERE match_id = ?"
+  ).run(reason || null, matchId);
+}
+
+function includeMatch(matchId) {
+  return db.prepare(
+    'UPDATE matches SET is_excluded = 0, excluded_at = NULL, excluded_reason = NULL WHERE match_id = ?'
+  ).run(matchId);
+}
+
+function getMatches(limit, includeExcluded) {
+  const where = includeExcluded ? '' : 'WHERE is_excluded = 0';
+  return db.prepare(`SELECT * FROM matches ${where} ORDER BY id DESC LIMIT ?`).all(limit || 50);
+}
+
+function getLongTermStats(recentCount) {
+  recentCount = recentCount || 10;
+  const total = db.prepare('SELECT COUNT(*) as n FROM matches WHERE is_excluded = 0').get()?.n || 0;
+  if (total === 0) return { total_matches: 0, recent: null, hero_usage: [], top_improvement: null };
+  const recent = db.prepare(`
+    SELECT
+      ROUND(AVG(deaths), 2)              as avg_deaths,
+      ROUND(AVG(gpm), 0)                 as avg_gpm,
+      ROUND(AVG(xpm), 0)                 as avg_xpm,
+      ROUND(AVG(pre_key_item_deaths), 2) as avg_pre_key_item_deaths,
+      ROUND(AVG(spike_unused_count), 2)  as avg_spike_unused,
+      ROUND(AVG(low_farm_windows), 2)    as avg_low_farm_windows
+    FROM (SELECT * FROM matches WHERE is_excluded = 0 ORDER BY id DESC LIMIT ?)
+  `).get(recentCount);
+  const heroUsage = db.prepare(
+    'SELECT hero, COUNT(*) as count FROM matches WHERE hero IS NOT NULL AND is_excluded = 0 GROUP BY hero ORDER BY count DESC'
+  ).all();
+  const topImprovement = db.prepare(
+    'SELECT one_thing_to_improve, COUNT(*) as count FROM matches WHERE one_thing_to_improve IS NOT NULL AND is_excluded = 0 GROUP BY one_thing_to_improve ORDER BY count DESC LIMIT 1'
+  ).get();
+  return {
+    total_matches: total,
+    recent_count: recentCount,
+    recent,
+    hero_usage: heroUsage,
+    top_improvement: topImprovement?.one_thing_to_improve || null,
+  };
 }
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
@@ -351,6 +400,66 @@ assert(snap.tpAtDeath?.name === 'item_tpscroll', 'tpAtDeath.name round-trips');
 // Backward-compat aliases also round-trip
 assert(snap.has_tp === true, 'backward-compat has_tp round-trips');
 assert(snap.pre_key_item === true, 'backward-compat pre_key_item round-trips');
+
+// ── Tests: Exclude Match feature ───────────────────────────────────────────
+
+console.log('\n── Exclude Match tests ───────────────────────────────────────────────');
+
+// Seed two additional matches for isolation
+const MATCH_EX1 = 'test_exclude_001';
+const MATCH_EX2 = 'test_exclude_002';
+
+saveMatch({ ...mockMatchRow, match_id: MATCH_EX1, hero: 'npc_dota_hero_dragon_knight', one_thing_to_improve: '避免过激进站位', gpm: 390 });
+saveMatch({ ...mockMatchRow, match_id: MATCH_EX2, hero: 'npc_dota_hero_tidehunter',    one_thing_to_improve: '避免过激进站位', gpm: 410 });
+saveMatchEvents(MATCH_EX1, mockEvents);
+saveKeyItemTimings(MATCH_EX1, computeKeyItemTimings(MATCH_EX1, centaurProfile, mockEvents));
+
+console.log('\nexcludeMatch sets is_excluded, excluded_at, excluded_reason:');
+const exResult = excludeMatch(MATCH_EX1, 'bot_test');
+assert(exResult.changes === 1, 'excludeMatch affects 1 row');
+const exRow = db.prepare('SELECT * FROM matches WHERE match_id = ?').get(MATCH_EX1);
+assert(exRow.is_excluded === 1, 'is_excluded set to 1');
+assert(exRow.excluded_reason === 'bot_test', 'excluded_reason stored correctly');
+assert(exRow.excluded_at !== null, 'excluded_at is not null');
+
+console.log('\ngetMatches default (no excluded):');
+const defaultList = getMatches(50, false);
+const defaultIds = defaultList.map((m) => m.match_id);
+assert(!defaultIds.includes(MATCH_EX1), 'excluded match hidden from default list');
+assert(defaultIds.includes(MATCH_EX2), 'non-excluded match appears in default list');
+
+console.log('\ngetMatches with includeExcluded=true:');
+const fullList = getMatches(50, true);
+const fullIds = fullList.map((m) => m.match_id);
+assert(fullIds.includes(MATCH_EX1), 'excluded match visible with includeExcluded=true');
+assert(fullIds.includes(MATCH_EX2), 'non-excluded match visible with includeExcluded=true');
+
+console.log('\ngetLongTermStats excludes excluded matches:');
+// Exclude MATCH_EX2 too so only original MATCH_ID and MATCH_DEATH count
+excludeMatch(MATCH_EX2, 'development_test');
+const stats = getLongTermStats(10);
+// MATCH_ID (gpm=480) and MATCH_DEATH (gpm=480) are non-excluded; EX1 (gpm=390) and EX2 (gpm=410) are excluded
+assert(stats.total_matches === 2, `total_matches counts only non-excluded (got ${stats.total_matches})`);
+assert(stats.hero_usage.every((h) => h.hero !== 'npc_dota_hero_dragon_knight'), 'excluded hero absent from hero_usage');
+assert(stats.hero_usage.every((h) => h.hero !== 'npc_dota_hero_tidehunter'), 'excluded hero absent from hero_usage');
+
+console.log('\nincludeMatch resets exclusion fields:');
+const incResult = includeMatch(MATCH_EX1);
+assert(incResult.changes === 1, 'includeMatch affects 1 row');
+const incRow = db.prepare('SELECT * FROM matches WHERE match_id = ?').get(MATCH_EX1);
+assert(incRow.is_excluded === 0, 'is_excluded reset to 0');
+assert(incRow.excluded_at === null, 'excluded_at cleared');
+assert(incRow.excluded_reason === null, 'excluded_reason cleared');
+
+console.log('\ndata preserved after exclude/include:');
+const eventsAfterExclude = db.prepare('SELECT * FROM match_events WHERE match_id = ?').all(MATCH_EX1);
+assert(eventsAfterExclude.length === mockEvents.length, 'match_events preserved after exclude');
+const timingsAfterExclude = db.prepare('SELECT * FROM key_item_timings WHERE match_id = ?').all(MATCH_EX1);
+assert(timingsAfterExclude.length > 0, 'key_item_timings preserved after exclude');
+
+console.log('\nexclude non-existent match returns 0 changes:');
+const noMatch = excludeMatch('nonexistent_match_xyz', 'other');
+assert(noMatch.changes === 0, 'excludeMatch on missing match_id returns 0 changes');
 
 // ── Summary ───────────────────────────────────────────────────────────────
 

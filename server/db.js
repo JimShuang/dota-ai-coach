@@ -61,6 +61,9 @@ db.exec(`
     pre_key_item_deaths INTEGER DEFAULT 0,
     spike_unused_count INTEGER DEFAULT 0,
     low_farm_windows INTEGER DEFAULT 0,
+    is_excluded INTEGER DEFAULT 0,
+    excluded_at TEXT,
+    excluded_reason TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -86,6 +89,16 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Migrate existing DBs that pre-date the exclude columns
+const _migrateExclude = [
+  "ALTER TABLE matches ADD COLUMN is_excluded INTEGER DEFAULT 0",
+  "ALTER TABLE matches ADD COLUMN excluded_at TEXT",
+  "ALTER TABLE matches ADD COLUMN excluded_reason TEXT",
+];
+for (const sql of _migrateExclude) {
+  try { db.exec(sql); } catch (_) { /* column already exists */ }
+}
 
 function saveGameState(data) {
   const player = data.player || {};
@@ -194,8 +207,21 @@ function saveKeyItemTimings(matchId, timings) {
   })(timings);
 }
 
-function getMatches(limit = 50) {
-  return db.prepare('SELECT * FROM matches ORDER BY id DESC LIMIT ?').all(limit);
+function excludeMatch(matchId, reason = null) {
+  return db.prepare(
+    "UPDATE matches SET is_excluded = 1, excluded_at = datetime('now'), excluded_reason = ? WHERE match_id = ?"
+  ).run(reason, matchId);
+}
+
+function includeMatch(matchId) {
+  return db.prepare(
+    'UPDATE matches SET is_excluded = 0, excluded_at = NULL, excluded_reason = NULL WHERE match_id = ?'
+  ).run(matchId);
+}
+
+function getMatches(limit = 50, includeExcluded = false) {
+  const where = includeExcluded ? '' : 'WHERE is_excluded = 0';
+  return db.prepare(`SELECT * FROM matches ${where} ORDER BY id DESC LIMIT ?`).all(limit);
 }
 
 function getMatchById(matchId) {
@@ -208,7 +234,7 @@ function getMatchById(matchId) {
 }
 
 function getLongTermStats(recentCount = 10) {
-  const total = db.prepare('SELECT COUNT(*) as n FROM matches').get()?.n || 0;
+  const total = db.prepare('SELECT COUNT(*) as n FROM matches WHERE is_excluded = 0').get()?.n || 0;
   if (total === 0) return { total_matches: 0, recent: null, hero_usage: [], top_improvement: null };
 
   const recent = db.prepare(`
@@ -219,15 +245,15 @@ function getLongTermStats(recentCount = 10) {
       ROUND(AVG(pre_key_item_deaths), 2) as avg_pre_key_item_deaths,
       ROUND(AVG(spike_unused_count), 2)  as avg_spike_unused,
       ROUND(AVG(low_farm_windows), 2)    as avg_low_farm_windows
-    FROM (SELECT * FROM matches ORDER BY id DESC LIMIT ?)
+    FROM (SELECT * FROM matches WHERE is_excluded = 0 ORDER BY id DESC LIMIT ?)
   `).get(recentCount);
 
   const heroUsage = db.prepare(
-    'SELECT hero, COUNT(*) as count FROM matches WHERE hero IS NOT NULL GROUP BY hero ORDER BY count DESC'
+    'SELECT hero, COUNT(*) as count FROM matches WHERE hero IS NOT NULL AND is_excluded = 0 GROUP BY hero ORDER BY count DESC'
   ).all();
 
   const topImprovement = db.prepare(
-    'SELECT one_thing_to_improve, COUNT(*) as count FROM matches WHERE one_thing_to_improve IS NOT NULL GROUP BY one_thing_to_improve ORDER BY count DESC LIMIT 1'
+    'SELECT one_thing_to_improve, COUNT(*) as count FROM matches WHERE one_thing_to_improve IS NOT NULL AND is_excluded = 0 GROUP BY one_thing_to_improve ORDER BY count DESC LIMIT 1'
   ).get();
 
   return {
@@ -243,4 +269,5 @@ module.exports = {
   saveGameState, saveAlert, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
   matchExists, saveMatch, saveMatchEvents, saveKeyItemTimings,
   getMatches, getMatchById, getLongTermStats,
+  excludeMatch, includeMatch,
 };

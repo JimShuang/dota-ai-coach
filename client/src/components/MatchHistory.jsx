@@ -261,20 +261,57 @@ function MatchDetail({ matchId, onBack }) {
   );
 }
 
+const EXCLUDE_REASONS = [
+  { value: 'bot_test',         label: '机器人测试' },
+  { value: 'unranked',         label: '非排位赛' },
+  { value: 'development_test', label: '开发测试' },
+  { value: 'corrupted_data',   label: '数据损坏' },
+  { value: 'duplicate',        label: '重复记录' },
+  { value: 'other',            label: '其他' },
+];
+
 // ── Match list ─────────────────────────────────────────────────────────────
 
 export default function MatchHistory() {
   const [matches, setMatches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState(null);
+  const [showExcluded, setShowExcluded] = useState(false);
+  const [excludeDialog, setExcludeDialog] = useState(null); // { matchId, label }
+  const [excludeReason, setExcludeReason] = useState('bot_test');
+  const [excluding, setExcluding] = useState(false);
 
-  useEffect(() => {
-    fetch('/api/history/matches?limit=50')
+  function loadMatches(incExcluded) {
+    setLoading(true);
+    const qs = `limit=50${incExcluded ? '&includeExcluded=true' : ''}`;
+    fetch(`/api/history/matches?${qs}`)
       .then((r) => r.json())
       .then(setMatches)
       .catch(() => setMatches([]))
       .finally(() => setLoading(false));
-  }, []);
+  }
+
+  useEffect(() => { loadMatches(showExcluded); }, [showExcluded]);
+
+  function handleExcludeConfirm() {
+    if (!excludeDialog) return;
+    setExcluding(true);
+    fetch(`/api/history/matches/${excludeDialog.matchId}/exclude`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: excludeReason }),
+    })
+      .then(() => { setExcludeDialog(null); loadMatches(showExcluded); })
+      .catch(() => {})
+      .finally(() => setExcluding(false));
+  }
+
+  function handleInclude(matchId, e) {
+    e.stopPropagation();
+    fetch(`/api/history/matches/${matchId}/include`, { method: 'POST' })
+      .then(() => loadMatches(showExcluded))
+      .catch(() => {});
+  }
 
   if (selectedId) {
     return (
@@ -286,9 +323,21 @@ export default function MatchHistory() {
 
   return (
     <div style={card}>
-      <div style={sectionTitle}>
-        历史比赛记录
-        {matches.length > 0 && <span style={{ color: '#f0883e', marginLeft: '8px' }}>({matches.length} 局)</span>}
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+        <div style={{ ...sectionTitle, marginBottom: 0 }}>
+          历史比赛记录
+          {matches.length > 0 && <span style={{ color: '#f0883e', marginLeft: '8px' }}>({matches.length} 局)</span>}
+        </div>
+        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', userSelect: 'none' }}>
+          <input
+            type="checkbox"
+            checked={showExcluded}
+            onChange={(e) => setShowExcluded(e.target.checked)}
+            style={{ accentColor: '#f0883e' }}
+          />
+          <span style={{ fontSize: '12px', color: '#8b949e' }}>显示已排除</span>
+        </label>
       </div>
 
       {loading ? (
@@ -302,20 +351,23 @@ export default function MatchHistory() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {matches.map((m) => {
+            const isExcluded = m.is_excluded === 1;
             const resultCfg = RESULT_CONFIG[m.result] || { color: '#8b949e', bg: '#161b22' };
             const gradeColor = GRADE_COLORS[m.overall_grade] || '#8b949e';
             return (
               <div
                 key={m.id}
-                onClick={() => setSelectedId(m.match_id)}
+                onClick={() => !isExcluded && setSelectedId(m.match_id)}
                 style={{
-                  background: '#0d1117', border: '1px solid #30363d',
+                  background: '#0d1117', border: `1px solid ${isExcluded ? '#30363d55' : '#30363d'}`,
                   borderRadius: '8px', padding: '12px 16px',
-                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '12px',
+                  cursor: isExcluded ? 'default' : 'pointer',
+                  display: 'flex', alignItems: 'center', gap: '12px',
+                  opacity: isExcluded ? 0.55 : 1,
                   transition: 'border-color 0.15s',
                 }}
-                onMouseEnter={(e) => e.currentTarget.style.borderColor = '#f0883e'}
-                onMouseLeave={(e) => e.currentTarget.style.borderColor = '#30363d'}
+                onMouseEnter={(e) => { if (!isExcluded) e.currentTarget.style.borderColor = '#f0883e'; }}
+                onMouseLeave={(e) => { if (!isExcluded) e.currentTarget.style.borderColor = '#30363d'; }}
               >
                 {/* Result indicator */}
                 <div style={{
@@ -333,10 +385,11 @@ export default function MatchHistory() {
                   </div>
                 </div>
 
-                {/* Result + grade */}
-                <div style={{ display: 'flex', gap: '6px' }}>
+                {/* Result + grade + excluded badge */}
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   <Badge text={m.result || '—'} color={resultCfg.color} bg={resultCfg.bg} />
                   {m.overall_grade && <Badge text={m.overall_grade} color={gradeColor} />}
+                  {isExcluded && <Badge text="已排除" color="#8b949e" bg="#30363d" />}
                 </div>
 
                 {/* K/D/A */}
@@ -344,7 +397,7 @@ export default function MatchHistory() {
                   {m.kills}/{m.deaths}/{m.assists}
                 </div>
 
-                {/* GPM / XPM */}
+                {/* GPM */}
                 <div style={{ fontSize: '12px', color: '#e3b341', minWidth: '80px' }}>
                   {Math.round(m.gpm)} GPM
                 </div>
@@ -362,10 +415,107 @@ export default function MatchHistory() {
                   {formatDate(m.end_time)}
                 </div>
 
-                <span style={{ color: '#30363d', fontSize: '16px' }}>›</span>
+                {/* Exclude / restore button */}
+                {isExcluded ? (
+                  <button
+                    onClick={(e) => handleInclude(m.match_id, e)}
+                    style={{
+                      flexShrink: 0, background: 'transparent', border: '1px solid #30363d',
+                      borderRadius: '5px', padding: '3px 10px', color: '#8b949e',
+                      fontSize: '11px', cursor: 'pointer',
+                    }}
+                  >
+                    恢复
+                  </button>
+                ) : (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setExcludeReason('bot_test');
+                      setExcludeDialog({ matchId: m.match_id, label: `${heroDisplayName(m.hero)} · ${formatDate(m.end_time)}` });
+                    }}
+                    style={{
+                      flexShrink: 0, background: 'transparent', border: '1px solid #30363d',
+                      borderRadius: '5px', padding: '3px 10px', color: '#8b949e',
+                      fontSize: '11px', cursor: 'pointer',
+                    }}
+                  >
+                    排除
+                  </button>
+                )}
+
+                {!isExcluded && <span style={{ color: '#30363d', fontSize: '16px' }}>›</span>}
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Exclude confirmation dialog */}
+      {excludeDialog && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          zIndex: 1000,
+        }}
+          onClick={() => setExcludeDialog(null)}
+        >
+          <div
+            style={{
+              background: '#161b22', border: '1px solid #30363d',
+              borderRadius: '12px', padding: '24px', minWidth: '320px', maxWidth: '400px',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3', marginBottom: '6px' }}>
+              排除比赛记录
+            </div>
+            <div style={{ fontSize: '12px', color: '#8b949e', marginBottom: '18px' }}>
+              {excludeDialog.label}
+            </div>
+            <div style={{ marginBottom: '18px' }}>
+              <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>
+                排除原因
+              </label>
+              <select
+                value={excludeReason}
+                onChange={(e) => setExcludeReason(e.target.value)}
+                style={{
+                  width: '100%', background: '#0d1117', border: '1px solid #30363d',
+                  borderRadius: '6px', padding: '8px 10px', color: '#e6edf3',
+                  fontSize: '13px', cursor: 'pointer',
+                }}
+              >
+                {EXCLUDE_REASONS.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setExcludeDialog(null)}
+                style={{
+                  background: 'transparent', border: '1px solid #30363d',
+                  borderRadius: '6px', padding: '7px 16px', color: '#8b949e',
+                  fontSize: '12px', cursor: 'pointer',
+                }}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleExcludeConfirm}
+                disabled={excluding}
+                style={{
+                  background: '#3d1a1a', border: '1px solid #f85149',
+                  borderRadius: '6px', padding: '7px 16px', color: '#f85149',
+                  fontSize: '12px', cursor: 'pointer', fontWeight: '600',
+                  opacity: excluding ? 0.6 : 1,
+                }}
+              >
+                {excluding ? '排除中...' : '确认排除'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

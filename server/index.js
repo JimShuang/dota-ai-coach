@@ -4,6 +4,7 @@ const {
   saveGameState, saveAlert,
   getRecentAlerts, getLatestState, getStatesByMatch,
   getMatches, getMatchById, getLongTermStats,
+  excludeMatch, includeMatch,
 } = require('./db');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
@@ -196,7 +197,21 @@ app.get('/api/postgame-summary', (req, res) => {
 
 app.get('/api/history/matches', (req, res) => {
   const limit = parseInt(req.query.limit) || 50;
-  res.json(getMatches(limit));
+  const includeExcluded = req.query.includeExcluded === 'true';
+  res.json(getMatches(limit, includeExcluded));
+});
+
+app.post('/api/history/matches/:matchId/exclude', (req, res) => {
+  const { reason } = req.body;
+  const result = excludeMatch(req.params.matchId, reason || null);
+  if (result.changes === 0) return res.status(404).json({ error: 'Match not found' });
+  res.json({ ok: true });
+});
+
+app.post('/api/history/matches/:matchId/include', (req, res) => {
+  const result = includeMatch(req.params.matchId);
+  if (result.changes === 0) return res.status(404).json({ error: 'Match not found' });
+  res.json({ ok: true });
 });
 
 app.get('/api/history/matches/:matchId', (req, res) => {
