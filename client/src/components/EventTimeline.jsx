@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { itemDisplayName } from '../heroItemNames';
 
 const card = {
   background: '#161b22',
@@ -52,6 +53,93 @@ function formatTime(seconds) {
   const m = Math.floor(Math.abs(seconds) / 60);
   const s = Math.abs(seconds) % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+// ── Death detail panel ─────────────────────────────────────────────────────
+
+function SlotCell({ name }) {
+  return (
+    <div style={{
+      padding: '2px 5px', borderRadius: '4px', fontSize: '10px', textAlign: 'center',
+      background: name ? '#21262d' : '#0d1117',
+      color: name ? '#c9d1d9' : '#30363d',
+      border: `1px solid ${name ? '#30363d' : '#21262d'}`,
+      minHeight: '18px', overflow: 'hidden', whiteSpace: 'nowrap',
+      textOverflow: 'ellipsis',
+    }}>
+      {name ? itemDisplayName(name) : '—'}
+    </div>
+  );
+}
+
+function DeathDetail({ snapshot: s }) {
+  if (!s) return null;
+
+  const inv     = s.inventoryAtDeath || {};
+  const bp      = s.backpackAtDeath  || {};
+  const stash   = s.stashAtDeath     || {};
+  const neutral = s.neutralItemAtDeath;
+  const hasStash = Object.values(stash).some(Boolean);
+
+  const rows = [
+    ['死亡前金币',   s.goldBeforeDeathPenalty != null ? `${s.goldBeforeDeathPenalty} g` : 'N/A'],
+    ['死亡后金币',   s.currentGoldAfterDeathIfAvailable != null ? `${s.currentGoldAfterDeathIfAvailable} g` : 'N/A'],
+    ['目标关键装备', s.keyItemAtDeath ? itemDisplayName(s.keyItemAtDeath) : 'N/A'],
+    ['距关键装备',   s.goldToKeyItemAtDeath != null ? `${s.goldToKeyItemAtDeath} g` : 'N/A'],
+    ['接近关键装备', s.wasNearKeyItem != null ? (s.wasNearKeyItem ? '是（差 <600g）' : '否') : 'N/A'],
+    ['处于强势期',   s.wasInPowerSpikeWindow != null ? (s.wasInPowerSpikeWindow ? '是 ⚡' : '否') : 'N/A'],
+    ['有传送卷轴',   s.hadTpAtDeath != null ? (s.hadTpAtDeath ? '有' : '无') : 'N/A'],
+  ];
+
+  const labelStyle = { fontSize: '10px', color: '#8b949e88', marginBottom: '3px' };
+
+  return (
+    <div style={{ marginTop: '8px', borderTop: '1px solid #30363d44', paddingTop: '8px' }}>
+      {/* Inventory — 2 rows of 3 */}
+      <div style={{ marginBottom: '5px' }}>
+        <div style={labelStyle}>主背包</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '3px' }}>
+          {[0, 1, 2, 3, 4, 5].map((i) => <SlotCell key={i} name={inv[`slot${i}`]} />)}
+        </div>
+      </div>
+
+      {/* Backpack — 3 slots in one row */}
+      <div style={{ marginBottom: '5px' }}>
+        <div style={labelStyle}>背包</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '3px' }}>
+          {[6, 7, 8].map((i) => <SlotCell key={i} name={bp[`slot${i}`]} />)}
+        </div>
+      </div>
+
+      {/* Neutral + Stash */}
+      <div style={{ display: 'flex', gap: '10px', marginBottom: '8px' }}>
+        <div style={{ width: '90px' }}>
+          <div style={labelStyle}>中立物品</div>
+          <SlotCell name={neutral} />
+        </div>
+        {hasStash && (
+          <div style={{ flex: 1 }}>
+            <div style={labelStyle}>藏物处</div>
+            <div style={{ display: 'flex', gap: '3px', flexWrap: 'wrap' }}>
+              {Object.entries(stash).filter(([, v]) => v).map(([k, name]) => (
+                <SlotCell key={k} name={name} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Stats grid */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '2px 12px' }}>
+        {rows.map(([label, value]) => (
+          <div key={label} style={{ display: 'flex', gap: '4px', fontSize: '11px' }}>
+            <span style={{ color: '#8b949e88', flexShrink: 0 }}>{label}:</span>
+            <span style={{ color: '#c9d1d9' }}>{value}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 // ── Post-game summary ──────────────────────────────────────────────────────
@@ -112,7 +200,7 @@ function PostGameSummary({ summary }) {
       )}
 
       {/* Death + Tempo analysis */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: (d.death_details?.length > 0) ? '12px' : '16px' }}>
         <div style={{ background: '#161b22', borderRadius: '8px', padding: '12px' }}>
           <div style={{ fontSize: '12px', color: '#f85149', fontWeight: '600', marginBottom: '8px' }}>死亡分析</div>
           {[
@@ -149,6 +237,22 @@ function PostGameSummary({ summary }) {
           ))}
         </div>
       </div>
+
+      {/* Per-death details */}
+      {(d.death_details || []).length > 0 && (
+        <div style={{ background: '#161b22', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
+          <div style={{ fontSize: '12px', color: '#f85149', fontWeight: '600', marginBottom: '8px' }}>死亡详情</div>
+          {d.death_details.map((detail, i) => (
+            <div key={i} style={{
+              fontSize: '12px', color: '#c9d1d9', padding: '4px 0', lineHeight: '1.7',
+              whiteSpace: 'pre-line',
+              borderBottom: i < d.death_details.length - 1 ? '1px solid #30363d44' : 'none',
+            }}>
+              {detail}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Positives / Negatives */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '16px' }}>
@@ -194,6 +298,15 @@ function PostGameSummary({ summary }) {
 
 export default function EventTimeline({ events, summary }) {
   const [filter, setFilter] = useState('all');
+  const [expandedDeaths, setExpandedDeaths] = useState(new Set());
+
+  function toggleDeath(idx) {
+    setExpandedDeaths((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  }
 
   const filtered = (events || []).filter(
     (e) => filter === 'all' || e.type === filter
@@ -271,7 +384,10 @@ export default function EventTimeline({ events, summary }) {
                     flex: 1, background: cfg.bg,
                     border: `1px solid ${borderColor}44`,
                     borderRadius: '8px', padding: '8px 12px',
-                  }}>
+                    cursor: event.type === 'hero_death' ? 'pointer' : 'default',
+                  }}
+                    onClick={() => event.type === 'hero_death' && toggleDeath(idx)}
+                  >
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{
                         fontSize: '11px', fontWeight: '600', color: cfg.color,
@@ -285,18 +401,24 @@ export default function EventTimeline({ events, summary }) {
                       <span style={{ fontSize: '12px', color: '#8b949e', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
                         {formatTime(event.game_time)}
                       </span>
+                      {event.type === 'hero_death' && (
+                        <span style={{ fontSize: '10px', color: '#8b949e66', flexShrink: 0 }}>
+                          {expandedDeaths.has(idx) ? '收起 ▲' : '详情 ▼'}
+                        </span>
+                      )}
                     </div>
-                    {event.snapshot && (
+                    {event.type !== 'hero_death' && event.snapshot && (
                       <div style={{ marginTop: '4px', fontSize: '11px', color: '#8b949e' }}>
                         {[
                           event.snapshot.gold != null && `金币 ${event.snapshot.gold}`,
-                          event.snapshot.net_worth != null && `净值 ${event.snapshot.net_worth?.toLocaleString()}`,
                           event.snapshot.gpm != null && `GPM ${Math.round(event.snapshot.gpm)}`,
                           event.snapshot.level != null && `Lv.${event.snapshot.level}`,
                           event.snapshot.in_power_spike && '⚡强势期',
-                          event.snapshot.has_tp === false && '无TP',
                         ].filter(Boolean).join(' · ')}
                       </div>
+                    )}
+                    {event.type === 'hero_death' && expandedDeaths.has(idx) && (
+                      <DeathDetail snapshot={event.snapshot} />
                     )}
                   </div>
                 </div>

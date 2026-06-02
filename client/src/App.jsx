@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import GameState from './components/GameState';
 import Alerts from './components/Alerts';
-import GoldChart from './components/GoldChart';
 import EventTimeline from './components/EventTimeline';
 import OfflaneSetup from './components/OfflaneSetup';
 import MatchHistory from './components/MatchHistory';
@@ -59,7 +58,6 @@ export default function App() {
   const [activeTab, setActiveTab]     = useState('live');
   const [gameState, setGameState]     = useState(null);
   const [alerts, setAlerts]           = useState([]);
-  const [history, setHistory]         = useState([]);
   const [events, setEvents]           = useState([]);
   const [summary, setSummary]         = useState(null);
   const [matchConfig, setMatchConfig] = useState(null);
@@ -67,25 +65,22 @@ export default function App() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [stateRes, alertsRes, historyRes, eventsRes, summaryRes, configRes] = await Promise.all([
+      const [stateRes, alertsRes, eventsRes, summaryRes, configRes] = await Promise.all([
         fetch('/api/state'),
         fetch('/api/alerts?limit=15'),
-        fetch('/api/states?limit=30'),
         fetch('/api/events'),
         fetch('/api/postgame-summary'),
         fetch('/api/match/config'),
       ]);
-      const [stateData, alertsData, historyData, eventsData, summaryData, configData] = await Promise.all([
+      const [stateData, alertsData, eventsData, summaryData, configData] = await Promise.all([
         stateRes.json(),
         alertsRes.json(),
-        historyRes.json(),
         eventsRes.json(),
         summaryRes.json(),
         configRes.json(),
       ]);
       setGameState(stateData);
       setAlerts(alertsData);
-      setHistory(historyData.reverse());
       setEvents(eventsData);
       setSummary(summaryData);
       setMatchConfig(configData);
@@ -149,9 +144,6 @@ export default function App() {
           <Alerts alerts={alerts} />
           <div style={styles.fullWidth}>
             <OfflaneSetup matchConfig={matchConfig} onConfigSaved={fetchData} />
-          </div>
-          <div style={styles.fullWidth}>
-            <GoldChart history={history} />
           </div>
           <div style={styles.fullWidth}>
             <EventTimeline events={events} summary={summary} />

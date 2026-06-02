@@ -129,10 +129,6 @@ function saveAlert(alert) {
   return stmt.run(alert);
 }
 
-function getRecentStates(limit = 60) {
-  return db.prepare('SELECT * FROM game_states ORDER BY id DESC LIMIT ?').all(limit);
-}
-
 function getRecentAlerts(limit = 20) {
   return db.prepare('SELECT * FROM alerts ORDER BY id DESC LIMIT ?').all(limit);
 }
@@ -244,7 +240,7 @@ function getLongTermStats(recentCount = 10) {
 }
 
 module.exports = {
-  saveGameState, saveAlert, getRecentStates, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
+  saveGameState, saveAlert, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
   matchExists, saveMatch, saveMatchEvents, saveKeyItemTimings,
   getMatches, getMatchById, getLongTermStats,
 };

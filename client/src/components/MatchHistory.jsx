@@ -202,25 +202,55 @@ function MatchDetail({ matchId, onBack }) {
           <div style={{ fontSize: '12px', color: '#8b949e', fontWeight: '600', marginBottom: '10px' }}>
             事件时间线 ({events.length} 条)
           </div>
-          <div style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+          <div style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
             {events.map((e) => {
               const severityColor = {
                 critical: '#f85149', danger: '#f85149',
                 warning: '#e3b341', success: '#56d364', info: '#79c0ff',
               }[e.severity] || '#8b949e';
+              const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
+
+              // Build flat item list from snapshot (prefer itemsAtDeath, fall back to inventoryAtDeath)
+              let deathItems = [];
+              if (snap) {
+                if (Array.isArray(snap.itemsAtDeath) && snap.itemsAtDeath.length > 0) {
+                  deathItems = snap.itemsAtDeath.filter((n) => n !== 'item_tpscroll');
+                } else if (snap.inventoryAtDeath) {
+                  deathItems = Object.values(snap.inventoryAtDeath).filter((n) => n && n !== 'item_tpscroll');
+                }
+              }
+
               return (
-                <div key={e.id} style={{ display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '4px 0', borderBottom: '1px solid #30363d22' }}>
-                  <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                    {formatTime(e.game_time)}
-                  </span>
-                  <span style={{
-                    fontSize: '10px', fontWeight: '600', color: severityColor,
-                    background: severityColor + '22', padding: '1px 6px', borderRadius: '4px',
-                    flexShrink: 0, alignSelf: 'center',
-                  }}>
-                    {e.type.replace(/_/g, ' ')}
-                  </span>
-                  <span style={{ fontSize: '12px', color: '#c9d1d9', lineHeight: '1.4' }}>{e.message}</span>
+                <div key={e.id} style={{ padding: '5px 0', borderBottom: '1px solid #30363d22' }}>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                    <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {formatTime(e.game_time)}
+                    </span>
+                    <span style={{
+                      fontSize: '10px', fontWeight: '600', color: severityColor,
+                      background: severityColor + '22', padding: '1px 6px', borderRadius: '4px',
+                      flexShrink: 0, alignSelf: 'center',
+                    }}>
+                      {e.type.replace(/_/g, ' ')}
+                    </span>
+                    <span style={{ fontSize: '12px', color: '#c9d1d9', lineHeight: '1.4' }}>{e.message}</span>
+                  </div>
+                  {snap && (
+                    <div style={{ marginLeft: '46px', marginTop: '3px', fontSize: '11px', color: '#8b949e66', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                      {snap.goldBeforeDeathPenalty != null && (
+                        <span>死前金币 <span style={{ color: '#e3b341' }}>{snap.goldBeforeDeathPenalty}g</span></span>
+                      )}
+                      {deathItems.length > 0 && (
+                        <span>道具：<span style={{ color: '#8b949e' }}>{deathItems.map(itemDisplayName).join('、')}</span></span>
+                      )}
+                      {snap.hadTpAtDeath === false && (
+                        <span style={{ color: '#e3b341' }}>无TP</span>
+                      )}
+                      {snap.wasNearKeyItem && (
+                        <span style={{ color: '#f85149' }}>差钱 &lt;600</span>
+                      )}
+                    </div>
+                  )}
                 </div>
               );
             })}

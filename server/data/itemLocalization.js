@@ -1,7 +1,7 @@
-// Shared Chinese display name maps for heroes and items.
-// Format: 中文（English）
+// Comprehensive Dota 2 item display names in Chinese (中文（English）format).
+// Internal names match GSI item.name values (item_xxx).
 
-export const ITEM_ZH = {
+const ITEM_NAMES_ZH = {
   // ── TP / Consumables ──────────────────────────────────────────────────────
   item_tpscroll:              '传送卷轴（Town Portal Scroll）',
   item_tango:                 '石像草（Tango）',
@@ -137,25 +137,10 @@ export const ITEM_ZH = {
   item_apex:                  '顶点（Apex）',
 };
 
-// Keyed by dotaHeroName (npc_dota_hero_xxx)
-export const HERO_ZH = {
-  npc_dota_hero_necrolyte:      '死灵法师（Necrophos）',
-  npc_dota_hero_razor:          '电魂（Razor）',
-  npc_dota_hero_viper:          '冥毒蛇（Viper）',
-  npc_dota_hero_tidehunter:     '潮汐猎手（Tidehunter）',
-  npc_dota_hero_vengefulspirit: '复仇之魂（Vengeful Spirit）',
-  npc_dota_hero_abaddon:        '亚巴顿（Abaddon）',
-  npc_dota_hero_centaur:        '半人马战行者（Centaur Warrunner）',
-};
-
-export function heroDisplayName(dotaName) {
-  if (!dotaName) return '未知英雄';
-  return HERO_ZH[dotaName]
-    || dotaName.replace('npc_dota_hero_', '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+function getDisplayName(internalName) {
+  if (!internalName) return '—';
+  return ITEM_NAMES_ZH[internalName]
+    || internalName.replace('item_', '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-export function itemDisplayName(itemKey) {
-  if (!itemKey) return '—';
-  return ITEM_ZH[itemKey]
-    || itemKey.replace('item_', '').replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
+module.exports = { ITEM_NAMES_ZH, getDisplayName };

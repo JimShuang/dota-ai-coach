@@ -285,6 +285,73 @@ assert(Array.isArray(fullDetail.keyItemTimings), 'keyItemTimings is array');
 assert(fullDetail.events[0].snapshot !== undefined, 'snapshot deserialized from JSON');
 assert(fullDetail.events.find((e) => e.type === 'game_end').snapshot === null, 'null snapshot deserialized as null');
 
+// ── Tests: death snapshot persisted and round-trips correctly ─────────────
+
+console.log('\n── death snapshot DB persistence ─────────────────────────────────────');
+
+const MATCH_DEATH = 'test_match_death_snap';
+
+const richDeathEvent = {
+  game_time: 620,
+  type: 'hero_death',
+  severity: 'critical',
+  message: '英雄阵亡（第 1 次） — 闪烁匕首（Blink Dagger） 差 450 金，可能严重拖慢节奏',
+  snapshot: {
+    goldBeforeDeathPenalty:           1800,
+    currentGoldAfterDeathIfAvailable: 1350,
+    itemsAtDeath:                     ['item_vanguard', 'item_tpscroll', 'item_magic_stick'],
+    inventoryAtDeath:                 { slot0: 'item_vanguard', slot1: 'item_tpscroll', slot2: 'item_magic_stick' },
+    stashAtDeath:                     {},
+    neutralItemAtDeath:               null,
+    tpAtDeath:                        { name: 'item_tpscroll', charges: 1 },
+    keyItemAtDeath:                   'item_blink',
+    goldToKeyItemAtDeath:             450,
+    gpmAtDeath:                       380,
+    xpmAtDeath:                       420,
+    killsAtDeath:                     0,
+    deathsAtDeath:                    0,
+    assistsAtDeath:                   0,
+    gameTimeAtDeath:                  620,
+    wasNearKeyItem:                   true,
+    wasInPowerSpikeWindow:            false,
+    hadTpAtDeath:                     true,
+    pre_key_item:                     true,
+    gold_gap_to_key_item:             450,
+    in_power_spike:                   false,
+    has_tp:                           true,
+  },
+};
+
+// Save to the in-memory DB
+saveMatch({ ...mockMatchRow, match_id: MATCH_DEATH });
+saveMatchEvents(MATCH_DEATH, [richDeathEvent]);
+
+const deathDetail = getMatchById(MATCH_DEATH);
+
+console.log('\nsnapshot_json contains new death fields:');
+const savedDeathEvt = deathDetail.events.find((e) => e.type === 'hero_death');
+assert(savedDeathEvt !== undefined, 'hero_death event found in DB');
+
+const snap = savedDeathEvt.snapshot;
+assert(snap !== null, 'snapshot deserialized from JSON');
+assert(snap.goldBeforeDeathPenalty === 1800, 'goldBeforeDeathPenalty round-trips correctly');
+assert(snap.currentGoldAfterDeathIfAvailable === 1350, 'currentGoldAfterDeathIfAvailable round-trips');
+assert(Array.isArray(snap.itemsAtDeath), 'itemsAtDeath is array after round-trip');
+assert(snap.itemsAtDeath.includes('item_vanguard'), 'itemsAtDeath contains item_vanguard');
+assert(snap.itemsAtDeath.includes('item_tpscroll'), 'itemsAtDeath contains item_tpscroll');
+assert(snap.keyItemAtDeath === 'item_blink', 'keyItemAtDeath round-trips');
+assert(snap.goldToKeyItemAtDeath === 450, 'goldToKeyItemAtDeath round-trips');
+assert(snap.wasNearKeyItem === true, 'wasNearKeyItem round-trips');
+assert(snap.wasInPowerSpikeWindow === false, 'wasInPowerSpikeWindow round-trips');
+assert(snap.hadTpAtDeath === true, 'hadTpAtDeath round-trips');
+assert(typeof snap.inventoryAtDeath === 'object', 'inventoryAtDeath is object after round-trip');
+assert(snap.inventoryAtDeath.slot0 === 'item_vanguard', 'inventoryAtDeath.slot0 round-trips');
+assert(snap.tpAtDeath?.name === 'item_tpscroll', 'tpAtDeath.name round-trips');
+
+// Backward-compat aliases also round-trip
+assert(snap.has_tp === true, 'backward-compat has_tp round-trips');
+assert(snap.pre_key_item === true, 'backward-compat pre_key_item round-trips');
+
 // ── Summary ───────────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(55)}`);

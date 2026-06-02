@@ -2,11 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const {
   saveGameState, saveAlert,
-  getRecentStates, getRecentAlerts, getLatestState, getStatesByMatch,
+  getRecentAlerts, getLatestState, getStatesByMatch,
   getMatches, getMatchById, getLongTermStats,
 } = require('./db');
 const { evaluate } = require('./rules');
-const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
+const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary, normalizeItems } = require('./eventLogger');
 const { getConfig, setConfig } = require('./matchConfig');
 const { PROFILES, getProfileByDotaName, getProfileKey } = require('./data/offlaneHeroProfiles');
 const { suggestKeyItem } = require('./suggestKeyItem');
@@ -22,10 +22,10 @@ app.use(express.json({ limit: '10mb' }));
 // ── Shared helpers ─────────────────────────────────────────────────────────
 
 function extractItemNames(data) {
-  const items = data.items || {};
+  const { slot, stash } = normalizeItems(data.items);
   return [
-    ...Object.values(items.slot || {}),
-    ...Object.values(items.stash || {}),
+    ...Object.values(slot),
+    ...Object.values(stash),
   ]
     .filter((i) => i && i.name && !i.name.includes('empty'))
     .map((i) => i.name);
@@ -125,11 +125,6 @@ gsiApp.post('/', (req, res) => {
 
 app.get('/api/state', (req, res) => {
   res.json(getLatestState() || null);
-});
-
-app.get('/api/states', (req, res) => {
-  const limit = parseInt(req.query.limit) || 60;
-  res.json(getRecentStates(limit));
 });
 
 app.get('/api/states/:matchId', (req, res) => {

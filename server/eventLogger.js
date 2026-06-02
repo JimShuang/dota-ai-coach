@@ -1,13 +1,16 @@
 // Match event logger — detects and accumulates structured timeline events.
 // State resets automatically when match_id changes.
 
-const { ITEM_COSTS, ITEM_DISPLAY_NAMES } = require('./data/offlaneHeroProfiles');
+const { getDisplayName } = require('./data/itemLocalization');
 
 // ── Module-level state ─────────────────────────────────────────────────────
 
 let events = [];
 let currentMatchId = null;
 let prevData = null;
+
+// Last tick where hero was alive — used for pre-death-penalty gold/items
+let latestAliveSnapshot = null;
 
 // TP-missing episode tracking
 let tpMissingStart = null;
@@ -35,6 +38,7 @@ function resetForMatch(matchId) {
   events = [];
   currentMatchId = matchId;
   prevData = null;
+  latestAliveSnapshot = null;
   tpMissingStart = null;
   tpMissingFired = false;
   gpmHistory = [];
@@ -42,11 +46,153 @@ function resetForMatch(matchId) {
   lastFarmCheck = { clock: 0, gpm: 0, ka: 0 };
 }
 
+// Inventory slots 0–5: explicit presence, null for empty
+function buildInventoryAtDeath(slotObj) {
+  const out = {};
+  for (let i = 0; i <= 5; i++) {
+    const key = `slot${i}`;
+    const item = slotObj?.[key];
+    out[key] = (item?.name && !item.name.includes('empty')) ? item.name : null;
+  }
+  return out;
+}
+
+// Backpack slots 6–8: explicit presence, null for empty
+function buildBackpackAtDeath(slotObj) {
+  const out = {};
+  for (let i = 6; i <= 8; i++) {
+    const key = `slot${i}`;
+    const item = slotObj?.[key];
+    out[key] = (item?.name && !item.name.includes('empty')) ? item.name : null;
+  }
+  return out;
+}
+
+// Stash: only non-empty slots
+function buildStashAtDeath(stashObj) {
+  const out = {};
+  for (const [key, item] of Object.entries(stashObj || {})) {
+    out[key] = (item?.name && !item.name.includes('empty')) ? item.name : null;
+  }
+  return out;
+}
+
+// Rich per-item objects covering inventory, backpack, stash, and neutral
+function buildItemDetails(slotObj, stashObj, neutralObj) {
+  const details = [];
+
+  for (let i = 0; i <= 5; i++) {
+    const item = slotObj?.[`slot${i}`];
+    if (item?.name && !item.name.includes('empty')) {
+      details.push({
+        slot: `slot${i}`,
+        internalName: item.name,
+        displayName:  getDisplayName(item.name),
+        cooldown:     item.cooldown  ?? 0,
+        charges:      item.charges   ?? null,
+        isInventory:  true,
+        isBackpack:   false,
+        isStash:      false,
+        isNeutral:    false,
+        isTeleport:   item.name === 'item_tpscroll',
+      });
+    }
+  }
+
+  for (let i = 6; i <= 8; i++) {
+    const item = slotObj?.[`slot${i}`];
+    if (item?.name && !item.name.includes('empty')) {
+      details.push({
+        slot: `slot${i}`,
+        internalName: item.name,
+        displayName:  getDisplayName(item.name),
+        cooldown:     item.cooldown  ?? 0,
+        charges:      item.charges   ?? null,
+        isInventory:  false,
+        isBackpack:   true,
+        isStash:      false,
+        isNeutral:    false,
+        isTeleport:   item.name === 'item_tpscroll',
+      });
+    }
+  }
+
+  for (const [key, item] of Object.entries(stashObj || {})) {
+    if (item?.name && !item.name.includes('empty')) {
+      details.push({
+        slot: key,
+        internalName: item.name,
+        displayName:  getDisplayName(item.name),
+        cooldown:     item.cooldown  ?? 0,
+        charges:      item.charges   ?? null,
+        isInventory:  false,
+        isBackpack:   false,
+        isStash:      true,
+        isNeutral:    false,
+        isTeleport:   item.name === 'item_tpscroll',
+      });
+    }
+  }
+
+  const neutralArr = Object.values(neutralObj || {}).filter((i) => i?.name && !i.name.includes('empty'));
+  if (neutralArr.length > 0) {
+    const item = neutralArr[0];
+    details.push({
+      slot: 'neutral0',
+      internalName: item.name,
+      displayName:  getDisplayName(item.name),
+      cooldown:     item.cooldown  ?? 0,
+      charges:      item.charges   ?? null,
+      isInventory:  false,
+      isBackpack:   false,
+      isStash:      false,
+      isNeutral:    true,
+      isTeleport:   false,
+    });
+  }
+
+  return details;
+}
+
+// Normalize raw GSI items payload to { slot, stash, neutral }.
+// Real Dota 2 GSI sends items in two possible layouts:
+//   Nested (mockGSI / some versions): items.slot.slot0, items.stash.stash0
+//   Flat   (live game):               items.slot0, items.stash0, items.neutral0
+function normalizeItems(itemsObj) {
+  if (!itemsObj) return { slot: {}, stash: {}, neutral: {} };
+
+  // Nested: items.slot is a plain object (not an item, not an array)
+  if (itemsObj.slot && typeof itemsObj.slot === 'object' && !Array.isArray(itemsObj.slot)
+      && !itemsObj.slot.name) {
+    return {
+      slot:    itemsObj.slot    || {},
+      stash:   itemsObj.stash   || {},
+      neutral: itemsObj.neutral || {},
+    };
+  }
+
+  // Flat: collect slot0–slot8, stash0–stash5, neutral0
+  const slot = {};
+  const stash = {};
+  const neutral = {};
+  for (let i = 0; i <= 8; i++) {
+    const k = `slot${i}`;
+    if (k in itemsObj) slot[k] = itemsObj[k];
+  }
+  for (let i = 0; i <= 5; i++) {
+    const k = `stash${i}`;
+    if (k in itemsObj) stash[k] = itemsObj[k];
+  }
+  if ('neutral0' in itemsObj) neutral.neutral0 = itemsObj.neutral0;
+
+  return { slot, stash, neutral };
+}
+
 function allItemNames(data) {
-  const items = data.items || {};
+  const { slot, stash } = normalizeItems(data.items);
   return [
-    ...Object.values(items.slot || {}),
-    ...Object.values(items.stash || {}),
+    ...Object.values(slot),
+    ...Object.values(stash),
   ]
     .filter((i) => i && i.name && !i.name.includes('empty'))
     .map((i) => i.name);
@@ -76,6 +222,68 @@ function makeSnapshot(data, ctx) {
   };
 }
 
+// Build a rich death snapshot using the last alive tick for pre-penalty gold/items.
+function makeDeathSnapshot(data, clock, ctx) {
+  const alive = latestAliveSnapshot || data;
+  const ap = alive.player || {};
+  const ai = normalizeItems(alive.items);
+
+  const inventoryAtDeath   = buildInventoryAtDeath(ai.slot);
+  const backpackAtDeath    = buildBackpackAtDeath(ai.slot);
+  const stashAtDeath       = buildStashAtDeath(ai.stash);
+  const itemDetailsAtDeath = buildItemDetails(ai.slot, ai.stash, ai.neutral);
+
+  // Flat list: all non-empty items across inventory + backpack + stash + neutral
+  const itemsAtDeath = [
+    ...Object.values(ai.slot    || {}),
+    ...Object.values(ai.stash   || {}),
+    ...Object.values(ai.neutral || {}),
+  ].filter((i) => i?.name && !i.name.includes('empty')).map((i) => i.name);
+
+  const tpObj = [...Object.values(ai.slot || {}), ...Object.values(ai.stash || {})]
+    .find((i) => i?.name === 'item_tpscroll') || null;
+  const hadTp = tpObj !== null;
+
+  const neutralArr = Object.values(ai.neutral || {}).filter((i) => i?.name && !i.name.includes('empty'));
+  const neutralItem = neutralArr[0]?.name || null;
+
+  const { suggested } = ctx || {};
+  const goldBefore = ap.gold ?? 0;
+  const ownedSet = new Set(itemsAtDeath);
+  const preKeyItem = !!(suggested?.suggestedKeyItem && !ownedSet.has(suggested.suggestedKeyItem));
+  const goldToKey = (suggested?.cost && preKeyItem) ? Math.max(0, suggested.cost - goldBefore) : null;
+  const wasNearKey = goldToKey !== null && goldToKey < 600;
+  const inSpike = powerSpike.active;
+
+  return {
+    goldBeforeDeathPenalty:            goldBefore,
+    currentGoldAfterDeathIfAvailable:  data.player?.gold ?? null,
+    itemsAtDeath,
+    inventoryAtDeath,
+    backpackAtDeath,
+    stashAtDeath,
+    neutralItemAtDeath:                neutralItem,
+    tpAtDeath:                         tpObj ? { name: tpObj.name, charges: tpObj.charges ?? null } : null,
+    itemDetailsAtDeath,
+    keyItemAtDeath:                    suggested?.suggestedKeyItem || null,
+    goldToKeyItemAtDeath:              goldToKey,
+    gpmAtDeath:                        ap.gpm || 0,
+    xpmAtDeath:                        ap.xpm || 0,
+    killsAtDeath:                      ap.kills || 0,
+    deathsAtDeath:                     ap.deaths || 0,
+    assistsAtDeath:                    ap.assists || 0,
+    gameTimeAtDeath:                   clock,
+    wasNearKeyItem:                    wasNearKey,
+    wasInPowerSpikeWindow:             inSpike,
+    hadTpAtDeath:                      hadTp,
+    // Backward-compat aliases used by buildSummary and EventTimeline
+    pre_key_item:          preKeyItem,
+    gold_gap_to_key_item:  goldToKey,
+    in_power_spike:        inSpike,
+    has_tp:                hadTp,
+  };
+}
+
 function push(event) {
   events.push(event);
 }
@@ -93,25 +301,20 @@ function detectHeroDeath(data, clock, ctx) {
   if (!prevData) return;
   if (!(data.hero?.alive === false && prevData.hero?.alive !== false)) return;
 
+  const snap = makeDeathSnapshot(data, clock, ctx);
   const { suggested } = ctx || {};
-  const gold = data.player?.gold || 0;
-  const hasTP = hasTp(data);
-  const ownedItems = new Set(allItemNames(data));
-  const preKeyItem = suggested?.suggestedKeyItem && !ownedItems.has(suggested.suggestedKeyItem);
-  const goldGap = suggested?.cost && preKeyItem ? Math.max(0, suggested.cost - gold) : null;
-  const inSpike = powerSpike.active;
 
   let severity = 'danger';
   let context = '';
 
-  if (preKeyItem && goldGap !== null && goldGap < 600) {
+  if (snap.pre_key_item && snap.gold_gap_to_key_item !== null && snap.gold_gap_to_key_item < 600) {
     severity = 'critical';
-    context = `关键装备 ${suggested.displayName} 差 ${goldGap} 金，可能严重拖慢节奏`;
-  } else if (inSpike) {
+    context = `关键装备 ${suggested?.displayName || snap.keyItemAtDeath} 差 ${snap.gold_gap_to_key_item} 金，可能严重拖慢节奏`;
+  } else if (snap.in_power_spike) {
     context = `强势期（${powerSpike.itemName || '关键装备'}完成后）死亡，可能浪费关键 timing`;
   }
 
-  const noTpNote = !hasTP ? '（当时无传送卷轴）' : '';
+  const noTpNote = !snap.has_tp ? '（当时无传送卷轴）' : '';
 
   push({
     game_time: clock,
@@ -122,13 +325,7 @@ function detectHeroDeath(data, clock, ctx) {
       context,
       noTpNote,
     ].filter(Boolean).join(' — '),
-    snapshot: {
-      ...makeSnapshot(data, ctx),
-      pre_key_item: preKeyItem,
-      gold_gap_to_key_item: goldGap,
-      in_power_spike: inSpike,
-      has_tp: hasTP,
-    },
+    snapshot: snap,
   });
 }
 
@@ -150,7 +347,7 @@ function detectItemPurchased(data, clock, ctx) {
   const logged = new Set();
   for (const name of allItemNames(data)) {
     if (!prevSet.has(name) && !logged.has(name)) {
-      const label = ITEM_DISPLAY_NAMES[name] || name.replace('item_', '').replace(/_/g, ' ');
+      const label = getDisplayName(name);
       push({
         game_time: clock,
         type: 'item_purchased',
@@ -174,7 +371,7 @@ function detectKeyItemEvents(data, clock, ctx) {
   // Check if a key item was just completed
   for (const item of heroProfile.keyItems) {
     if (!prevOwned.has(item) && currOwned.has(item)) {
-      const displayName = ITEM_DISPLAY_NAMES[item] || item.replace('item_', '').replace(/_/g, ' ');
+      const displayName = getDisplayName(item);
       push({
         game_time: clock,
         type: 'key_item_completed',
@@ -345,6 +542,11 @@ function logEvents(data, ctx = {}) {
     resetForMatch(matchId);
   }
 
+  // Track the last alive tick BEFORE death detection so makeDeathSnapshot gets pre-penalty values
+  if (data.hero?.alive === true) {
+    latestAliveSnapshot = data;
+  }
+
   detectHeroDeath(data, clock, ctx);
   detectHeroRespawn(data, clock, ctx);
   detectItemPurchased(data, clock, ctx);
@@ -374,6 +576,13 @@ function getOfflanieSummary(heroProfile) {
   return buildSummary(heroProfile);
 }
 
+function formatTimeSummary(t) {
+  if (t == null) return '?';
+  const m = Math.floor(Math.abs(t) / 60);
+  const s = Math.abs(t) % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
 function buildSummary(heroProfile) {
   if (events.length === 0) return null;
 
@@ -401,7 +610,7 @@ function buildSummary(heroProfile) {
     );
     return {
       item: e.snapshot?.item,
-      displayName: ITEM_DISPLAY_NAMES[e.snapshot?.item] || e.snapshot?.item,
+      displayName: getDisplayName(e.snapshot?.item),
       completedAt: e.game_time,
       spikeDeathsAfter: afterEvents.length,
     };
@@ -481,6 +690,35 @@ function buildSummary(heroProfile) {
       close_to_key_item: closeDeaths.length,
       in_power_spike: spikeDeaths.length,
       without_tp: noTpDeaths.length,
+      death_details: deaths.map((e) => {
+        const s = e.snapshot || {};
+
+        const invItems = Object.values(s.inventoryAtDeath || {})
+          .filter((n) => n && n !== 'item_tpscroll')
+          .map(getDisplayName);
+        const invStr = invItems.length > 0 ? invItems.join('、') : '空';
+
+        const bpItems = Object.values(s.backpackAtDeath || {})
+          .filter(Boolean)
+          .map(getDisplayName);
+        const bpStr = bpItems.length > 0 ? bpItems.join('、') : '空';
+
+        const neutralStr = s.neutralItemAtDeath ? getDisplayName(s.neutralItemAtDeath) : '无';
+
+        const lines = [`${formatTimeSummary(e.game_time)} 死亡：`];
+        lines.push(`  当时主背包：${invStr}。`);
+        lines.push(`  背包：${bpStr}。`);
+        lines.push(`  中立物品：${neutralStr}。`);
+
+        const gap = s.goldToKeyItemAtDeath ?? s.gold_gap_to_key_item;
+        if (s.keyItemAtDeath && gap != null) {
+          lines.push(`  ${getDisplayName(s.keyItemAtDeath)} 还差 ${gap} 金。`);
+        }
+        if (s.wasNearKeyItem || (gap != null && gap < 600)) lines.push('  这是关键装备前高影响死亡。');
+        if (s.wasInPowerSpikeWindow || s.in_power_spike) lines.push('  处于强势期窗口内死亡，可能浪费 timing。');
+
+        return lines.join('\n');
+      }),
     },
     tempo_analysis: {
       spike_unused_count: spikeUnused.length,
@@ -496,4 +734,4 @@ function buildSummary(heroProfile) {
   };
 }
 
-module.exports = { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary };
+module.exports = { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary, resetForMatch, normalizeItems };
