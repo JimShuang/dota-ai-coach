@@ -2,6 +2,7 @@
 // State resets automatically when match_id changes.
 
 const { getDisplayName } = require('./data/itemLocalization');
+const { normalizeItems } = require('./utils/gsiNormalizer');
 
 // ── Module-level state ─────────────────────────────────────────────────────
 
@@ -152,40 +153,6 @@ function buildItemDetails(slotObj, stashObj, neutralObj) {
   }
 
   return details;
-}
-
-// Normalize raw GSI items payload to { slot, stash, neutral }.
-// Real Dota 2 GSI sends items in two possible layouts:
-//   Nested (mockGSI / some versions): items.slot.slot0, items.stash.stash0
-//   Flat   (live game):               items.slot0, items.stash0, items.neutral0
-function normalizeItems(itemsObj) {
-  if (!itemsObj) return { slot: {}, stash: {}, neutral: {} };
-
-  // Nested: items.slot is a plain object (not an item, not an array)
-  if (itemsObj.slot && typeof itemsObj.slot === 'object' && !Array.isArray(itemsObj.slot)
-      && !itemsObj.slot.name) {
-    return {
-      slot:    itemsObj.slot    || {},
-      stash:   itemsObj.stash   || {},
-      neutral: itemsObj.neutral || {},
-    };
-  }
-
-  // Flat: collect slot0–slot8, stash0–stash5, neutral0
-  const slot = {};
-  const stash = {};
-  const neutral = {};
-  for (let i = 0; i <= 8; i++) {
-    const k = `slot${i}`;
-    if (k in itemsObj) slot[k] = itemsObj[k];
-  }
-  for (let i = 0; i <= 5; i++) {
-    const k = `stash${i}`;
-    if (k in itemsObj) stash[k] = itemsObj[k];
-  }
-  if ('neutral0' in itemsObj) neutral.neutral0 = itemsObj.neutral0;
-
-  return { slot, stash, neutral };
 }
 
 function allItemNames(data) {

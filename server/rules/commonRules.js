@@ -1,6 +1,8 @@
 // General rules that apply to all roles/heroes.
 // Moved from the original server/rules.js.
 
+const { normalizeItems } = require('../utils/gsiNormalizer');
+
 const COMMON_RULES = [
   {
     id: 'low_gold',
@@ -54,8 +56,8 @@ const COMMON_RULES = [
     check(data) {
       const player = data.player || {};
       const clock = data.map?.clock_time || 0;
-      const items = data.items || {};
-      const allItems = [...Object.values(items.slot || {}), ...Object.values(items.stash || {})];
+      const { slot, stash } = normalizeItems(data.items);
+      const allItems = [...Object.values(slot), ...Object.values(stash)];
       const wardCount = allItems.filter(
         (i) => i && (i.name === 'item_ward_observer' || i.name === 'item_ward_sentry')
       ).length;
@@ -80,8 +82,8 @@ const COMMON_RULES = [
   {
     id: 'teleport_scroll',
     check(data) {
-      const items = data.items || {};
-      const allItems = [...Object.values(items.slot || {}), ...Object.values(items.stash || {})];
+      const { slot, stash } = normalizeItems(data.items);
+      const allItems = [...Object.values(slot), ...Object.values(stash)];
       const hasTp = allItems.some((i) => i && i.name === 'item_tpscroll');
       const clock = data.map?.clock_time || 0;
       if (clock > 300 && !hasTp) {

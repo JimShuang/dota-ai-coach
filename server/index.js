@@ -6,7 +6,8 @@ const {
   getMatches, getMatchById, getLongTermStats,
 } = require('./db');
 const { evaluate } = require('./rules');
-const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary, normalizeItems } = require('./eventLogger');
+const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
+const { normalizeItems } = require('./utils/gsiNormalizer');
 const { getConfig, setConfig } = require('./matchConfig');
 const { PROFILES, getProfileByDotaName, getProfileKey } = require('./data/offlaneHeroProfiles');
 const { suggestKeyItem } = require('./suggestKeyItem');
