@@ -156,10 +156,11 @@ function buildItemDetails(slotObj, stashObj, neutralObj) {
 }
 
 function allItemNames(data) {
-  const { slot, stash } = normalizeItems(data.items);
+  const { slot, stash, teleport } = normalizeItems(data.items);
   return [
     ...Object.values(slot),
     ...Object.values(stash),
+    teleport,
   ]
     .filter((i) => i && i.name && !i.name.includes('empty'))
     .map((i) => i.name);
@@ -207,7 +208,7 @@ function makeDeathSnapshot(data, clock, ctx) {
     ...Object.values(ai.neutral || {}),
   ].filter((i) => i?.name && !i.name.includes('empty')).map((i) => i.name);
 
-  const tpObj = [...Object.values(ai.slot || {}), ...Object.values(ai.stash || {})]
+  const tpObj = [...Object.values(ai.slot || {}), ...Object.values(ai.stash || {}), ai.teleport]
     .find((i) => i?.name === 'item_tpscroll') || null;
   const hadTp = tpObj !== null;
 
@@ -306,25 +307,6 @@ function detectHeroRespawn(data, clock, ctx) {
     message: '英雄复活',
     snapshot: makeSnapshot(data, ctx),
   });
-}
-
-function detectItemPurchased(data, clock, ctx) {
-  if (!prevData) return;
-  const prevSet = new Set(allItemNames(prevData));
-  const logged = new Set();
-  for (const name of allItemNames(data)) {
-    if (!prevSet.has(name) && !logged.has(name)) {
-      const label = getDisplayName(name);
-      push({
-        game_time: clock,
-        type: 'item_purchased',
-        severity: 'info',
-        message: `购入道具：${label}`,
-        snapshot: { ...makeSnapshot(data, ctx), item: name },
-      });
-      logged.add(name);
-    }
-  }
 }
 
 function detectKeyItemEvents(data, clock, ctx) {
@@ -516,7 +498,6 @@ function logEvents(data, ctx = {}) {
 
   detectHeroDeath(data, clock, ctx);
   detectHeroRespawn(data, clock, ctx);
-  detectItemPurchased(data, clock, ctx);
   detectKeyItemEvents(data, clock, ctx);
   detectPowerSpikeUnused(data, clock);
   detectTpMissing(data, clock, ctx);

@@ -16,10 +16,11 @@ const sectionTitle = {
   letterSpacing: '1px',
 };
 
+const DEFAULT_EVENT_CFG = { icon: '•', label: '事件', color: '#8b949e', bg: '#161b22' };
+
 const EVENT_CONFIG = {
   hero_death:              { icon: '💀', label: '阵亡',     color: '#f85149', bg: '#3d1a1a' },
   hero_respawn:            { icon: '✨', label: '复活',     color: '#79c0ff', bg: '#0d2137' },
-  item_purchased:          { icon: '🛒', label: '购入',     color: '#56d364', bg: '#0d2b0d' },
   key_item_completed:      { icon: '⭐', label: '关键装备', color: '#e3b341', bg: '#2d2008' },
   key_item_near_completion:{ icon: '🔔', label: '装备快好', color: '#e3b341', bg: '#2d2008' },
   power_spike_started:     { icon: '⚡', label: '强势期',   color: '#bc8cff', bg: '#1e1535' },
@@ -363,7 +364,7 @@ export default function EventTimeline({ events, summary }) {
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             {filtered.map((event, idx) => {
               const isWin = event.type === 'game_end' && event.severity === 'success';
-              const cfg = EVENT_CONFIG[isWin ? 'game_end_win' : event.type] || EVENT_CONFIG.item_purchased;
+              const cfg = EVENT_CONFIG[isWin ? 'game_end_win' : event.type] || DEFAULT_EVENT_CFG;
               const sevOverride = SEVERITY_OVERRIDE[event.severity] || {};
               const borderColor = sevOverride.border || cfg.color;
 

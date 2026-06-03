@@ -83,6 +83,7 @@ Slot ranges:
 - `slot6–slot8` = backpack
 - `stash0–stash5` = stash
 - `neutral0` = neutral item
+- `teleport` = dedicated TP scroll slot (top-level key, separate from inventory; normalizeItems exposes it as `.teleport`)
 
 ---
 
@@ -129,7 +130,6 @@ Events are accumulated in-memory by `server/eventLogger.js` and flushed to `matc
 |------|---------|----------|
 | `hero_death` | `hero.alive` true → false | `critical` \| `danger` |
 | `hero_respawn` | `hero.alive` false → true | `info` |
-| `item_purchased` | new item appears in allItemNames | `info` |
 | `key_item_completed` | key route item newly appears | `info` |
 | `key_item_near_completion` | gold gap < 600 to next key item | `warning` |
 | `power_spike_started` | powerSpikeItem completed | `info` |
@@ -330,7 +330,6 @@ Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_da
 ## Future roadmap
 
 ### Near-term
-- **Ward reminder GSI fix**: `commonRules.js` `ward_reminder` now uses `normalizeItems()` but Dota 2 may not send ward items in the GSI payload at all — verify with real game data.
 - **Real GSI format verification**: Capture one live GSI payload and confirm flat vs. nested item layout, then remove the nested branch from `normalizeItems` if it's never used.
 - **EventTimeline in MatchHistory**: The historical match detail page shows death event messages but no snapshot expansion. Add an expandable `DeathDetail` panel (reuse the component from EventTimeline).
 

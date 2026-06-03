@@ -52,22 +52,6 @@ const COMMON_RULES = [
     },
   },
   {
-    id: 'ward_reminder',
-    check(data) {
-      const player = data.player || {};
-      const clock = data.map?.clock_time || 0;
-      const { slot, stash } = normalizeItems(data.items);
-      const allItems = [...Object.values(slot), ...Object.values(stash)];
-      const wardCount = allItems.filter(
-        (i) => i && (i.name === 'item_ward_observer' || i.name === 'item_ward_sentry')
-      ).length;
-      if (clock > 120 && wardCount === 0 && (player.team_name === 'dire' || player.team_name === 'radiant')) {
-        return { message: '背包中没有视野道具，记得购买插眼', severity: 'info' };
-      }
-      return null;
-    },
-  },
-  {
     id: 'death_streak',
     check(data, prevData) {
       if (!prevData) return null;
@@ -82,9 +66,10 @@ const COMMON_RULES = [
   {
     id: 'teleport_scroll',
     check(data) {
-      const { slot, stash } = normalizeItems(data.items);
+      const { slot, stash, teleport } = normalizeItems(data.items);
       const allItems = [...Object.values(slot), ...Object.values(stash)];
-      const hasTp = allItems.some((i) => i && i.name === 'item_tpscroll');
+      const hasTp = (teleport?.name === 'item_tpscroll')
+        || allItems.some((i) => i && i.name === 'item_tpscroll');
       const clock = data.map?.clock_time || 0;
       if (clock > 300 && !hasTp) {
         return { message: '没有传送卷轴，购买一个以备不时之需', severity: 'warning' };

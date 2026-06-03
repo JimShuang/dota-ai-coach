@@ -10,15 +10,16 @@
 //   neutral — { neutral0 }
 
 function normalizeItems(itemsObj) {
-  if (!itemsObj) return { slot: {}, stash: {}, neutral: {} };
+  if (!itemsObj) return { slot: {}, stash: {}, neutral: {}, teleport: null };
 
   // Nested: items.slot is a plain sub-object (has no .name property, is not an array)
   if (itemsObj.slot && typeof itemsObj.slot === 'object'
       && !Array.isArray(itemsObj.slot) && !itemsObj.slot.name) {
     return {
-      slot:    itemsObj.slot    || {},
-      stash:   itemsObj.stash   || {},
-      neutral: itemsObj.neutral || {},
+      slot:     itemsObj.slot      || {},
+      stash:    itemsObj.stash     || {},
+      neutral:  itemsObj.neutral   || {},
+      teleport: itemsObj.teleport  || null,
     };
   }
 
@@ -35,9 +36,12 @@ function normalizeItems(itemsObj) {
     const k = `stash${i}`;
     if (k in itemsObj) stash[k] = itemsObj[k];
   }
-  if ('neutral0' in itemsObj) neutral.neutral0 = itemsObj.neutral0;
+  if ('neutral0'  in itemsObj) neutral.neutral0 = itemsObj.neutral0;
 
-  return { slot, stash, neutral };
+  // Dedicated TP slot — present in live GSI as a top-level "teleport" key
+  const teleport = itemsObj.teleport || null;
+
+  return { slot, stash, neutral, teleport };
 }
 
 module.exports = { normalizeItems };
