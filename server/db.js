@@ -90,13 +90,14 @@ db.exec(`
   );
 `);
 
-// Migrate existing DBs that pre-date the exclude columns
-const _migrateExclude = [
+// Migrate existing DBs that pre-date added columns
+const _migrations = [
   "ALTER TABLE matches ADD COLUMN is_excluded INTEGER DEFAULT 0",
   "ALTER TABLE matches ADD COLUMN excluded_at TEXT",
   "ALTER TABLE matches ADD COLUMN excluded_reason TEXT",
+  "ALTER TABLE matches ADD COLUMN import_source TEXT",
 ];
-for (const sql of _migrateExclude) {
+for (const sql of _migrations) {
   try { db.exec(sql); } catch (_) { /* column already exists */ }
 }
 
@@ -174,15 +175,17 @@ function saveMatch(row) {
        kills, deaths, assists, gpm, xpm, last_hits, denies, final_gold,
        suggested_key_item, user_override_key_item,
        overall_grade, one_thing_to_improve,
-       pre_key_item_deaths, spike_unused_count, low_farm_windows)
+       pre_key_item_deaths, spike_unused_count, low_farm_windows,
+       import_source)
     VALUES
       (@match_id, @hero, @role, @archetype, @playstyle, @result,
        @start_time, @end_time, @duration,
        @kills, @deaths, @assists, @gpm, @xpm, @last_hits, @denies, @final_gold,
        @suggested_key_item, @user_override_key_item,
        @overall_grade, @one_thing_to_improve,
-       @pre_key_item_deaths, @spike_unused_count, @low_farm_windows)
-  `).run(row);
+       @pre_key_item_deaths, @spike_unused_count, @low_farm_windows,
+       @import_source)
+  `).run({ import_source: null, ...row });
 }
 
 function saveMatchEvents(matchId, events) {

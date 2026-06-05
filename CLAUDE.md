@@ -11,6 +11,7 @@ Project guide for Claude Code. Update this file after every significant feature.
 - **No automatic game control.**
 - **Only allowed inputs:** Dota 2 GSI (HTTP POST to localhost:3000), user manual config, local rule system.
 - **Role scope:** Offlane (Position 3) only.
+- **External API exception:** OpenDota public API (`https://api.opendota.com/api/matches/:id`) is used **only** for the manual Import Match feature. No other external APIs are permitted.
 
 ---
 
@@ -54,9 +55,10 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/data/itemLocalization.js` | 90+ item Chinese display names + `getDisplayName()` |
 | `server/utils/gsiNormalizer.js` | **`normalizeItems()`** — handles flat vs. nested GSI format |
 | `server/utils/itemProgression.js` | `extractItemStateForProgression()` — pure, for future inference |
-| `server/rules/commonRules.js` | 7 universal rules (TP, wards, gold, last hits, buyback…) |
+| `server/rules/commonRules.js` | 6 universal rules (TP, gold, last hits, buyback, death streak, roshan) |
 | `server/rules/offlaneRules.js` | Offlane-specific rules (key item near-complete, spike unused…) |
 | `server/rules/archetypeRules.js` | Archetype-specific coaching (initiator, bully, aura…) |
+| `server/matchImporter.js` | Import match by ID via OpenDota API; reconstructs events + timings |
 
 ---
 
@@ -205,6 +207,7 @@ matches (id, match_id UNIQUE, hero, role, archetype, playstyle, result,
          is_excluded INTEGER DEFAULT 0,   -- Exclude Match feature
          excluded_at TEXT,                -- datetime('now') when excluded
          excluded_reason TEXT,            -- bot_test | unranked | development_test | corrupted_data | duplicate | other
+         import_source TEXT,              -- NULL = live GSI match; 'opendota' = imported via OpenDota API
          created_at)
 
 -- Event timeline per match (all 10 types)
@@ -264,14 +267,15 @@ The server uses `require()` / `module.exports` throughout. VS Code shows a 80001
 
 ```
 server/tests/
-  suggestKeyItem.test.js   18 assertions — pure function, no I/O
-  matchHistory.test.js     79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
-  eventLogger.test.js      53 assertions — death snapshot, item fields, normalizeItems
+  suggestKeyItem.test.js    18 assertions — pure function, no I/O
+  matchHistory.test.js      79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
+  eventLogger.test.js       53 assertions — death snapshot, item fields, normalizeItems
+  matchImporter.test.js     39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 150 assertions must pass before merging any change.
+All 189 assertions must pass before merging any change.
 
 ---
 
@@ -288,6 +292,47 @@ All 150 assertions must pass before merging any change.
 5. Add `ITEM_COSTS` entries for any new key items.
 6. Add hero to `HERO_ZH` in `client/src/heroItemNames.js`.
 7. Optionally add archetype-specific rules to `server/rules/archetypeRules.js`.
+
+---
+
+## Import Match feature
+
+Allows users to import a past Dota 2 match by ID using the OpenDota public API. Imported matches participate in History and Long-Term Trends identically to live-tracked matches, and support Exclude Match.
+
+### Flow
+1. User clicks **"+ 导入比赛"** in MatchHistory.
+2. Enters Match ID + selects hero from supported list.
+3. **Preview step** (`POST /api/history/import/preview`) — fetches OpenDota, returns match stats + key item timings. No DB write.
+4. User confirms → **Import** (`POST /api/history/import`) — fetches again, reconstructs events, persists.
+
+### Data reconstructed from OpenDota
+| Source | Events generated |
+|--------|-----------------|
+| `purchase_log` | `key_item_completed`, `power_spike_started` |
+| Match end | `game_end` (win/loss) |
+
+Not available without replay parsing: `hero_death`, `no_tp_warning`, `low_farm_window`.
+
+### Analysis
+Grade and `one_thing_to_improve` are computed from KDA, GPM, and key item timing (see `computeGrade` / `computeOneThingToImprove` in `matchImporter.js`). `pre_key_item_deaths` and `spike_unused_count` are 0 for imported matches.
+
+### API
+
+| Method | Route | Body | Effect |
+|--------|-------|------|--------|
+| `POST` | `/api/history/import/preview` | `{ matchId, heroKey }` | Returns preview data — no DB write |
+| `POST` | `/api/history/import` | `{ matchId, heroKey }` | Fetches + persists; returns `{ ok, match_id, result, grade }` |
+
+### Hero key → OpenDota hero_id map (in `matchImporter.js`)
+`centaur=96, tidehunter=29, razor=15, viper=47, necrophos=36, abaddon=102, vengefulspirit=20`
+
+### `import_source` column
+Imported matches have `import_source = 'opendota'`; live matches have `import_source = NULL`. Used to render "导入" badge in the UI.
+
+### Constraints preserved
+- `matchExists()` dedup prevents re-importing.
+- All existing `getMatches`, `getLongTermStats` queries include imported matches automatically.
+- Exclude/Include works identically.
 
 ---
 
@@ -360,6 +405,7 @@ dota-ai-coach/
 │   ├── matchConfig.js                 ← in-process config (hero, playstyle, override)
 │   ├── matchHistory.js                ← persistMatch() + computeKeyItemTimings()
 │   ├── suggestKeyItem.js              ← pure function: next key item inference
+│   ├── matchImporter.js               ← Import Match: OpenDota fetch + event reconstruction
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -375,6 +421,7 @@ dota-ai-coach/
 │       ├── eventLogger.test.js        ← 53 assertions
 │       ├── matchHistory.test.js       ← 79 assertions
 │       ├── suggestKeyItem.test.js     ← 18 assertions
+│       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

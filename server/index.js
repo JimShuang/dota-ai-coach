@@ -13,6 +13,7 @@ const { getConfig, setConfig } = require('./matchConfig');
 const { PROFILES, getProfileByDotaName, getProfileKey } = require('./data/offlaneHeroProfiles');
 const { suggestKeyItem } = require('./suggestKeyItem');
 const { persistMatch } = require('./matchHistory');
+const { previewMatch, importMatch } = require('./matchImporter');
 
 const app = express();
 const PORT = 3001;
@@ -223,6 +224,35 @@ app.get('/api/history/matches/:matchId', (req, res) => {
 app.get('/api/history/stats', (req, res) => {
   const recentCount = parseInt(req.query.recent) || 10;
   res.json(getLongTermStats(recentCount));
+});
+
+// ── Match import (OpenDota) ────────────────────────────────────────────────
+
+app.post('/api/history/import/preview', async (req, res) => {
+  const { matchId, heroKey } = req.body || {};
+  if (!matchId || !heroKey) {
+    return res.status(400).json({ error: '缺少 matchId 或 heroKey' });
+  }
+  try {
+    const preview = await previewMatch(matchId, heroKey);
+    res.json(preview);
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/history/import', async (req, res) => {
+  const { matchId, heroKey } = req.body || {};
+  if (!matchId || !heroKey) {
+    return res.status(400).json({ error: '缺少 matchId 或 heroKey' });
+  }
+  try {
+    const result = await importMatch(matchId, heroKey);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = err.message.includes('已存在') ? 409 : 400;
+    res.status(status).json({ error: err.message });
+  }
 });
 
 app.get('/api/health', (req, res) => {
