@@ -37,6 +37,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
            ├─ OfflaneSetup.jsx
            ├─ EventTimeline.jsx      ← live events + PostGameSummary
            ├─ MatchHistory.jsx       ← historical match list + detail
+           ├─ MatchImportPreview.jsx ← 10-player import preview card (history tab)
            └─ LongTermTrends.jsx     ← multi-match aggregate stats
 ```
 
@@ -60,6 +61,8 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/rules/archetypeRules.js` | Archetype-specific coaching (initiator, bully, aura…) |
 | `server/matchImporter.js` | Import match by ID via OpenDota API; reconstructs events + timings |
 | `server/openDotaRawService.js` | Raw OpenDota cache: fetch → store full response in `raw_opendota_matches` |
+| `server/importPreviewService.js` | Pure: `buildPreview(rawMatchData)` → structured 10-player preview object |
+| `server/data/dotaHeroNames.js` | `hero_id` → display name map (~130 heroes; profile heroes in Chinese) |
 
 ---
 
@@ -282,11 +285,12 @@ server/tests/
   eventLogger.test.js       53 assertions — death snapshot, item fields, normalizeItems
   matchImporter.test.js     39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
   openDotaRaw.test.js       47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
+  importPreview.test.js     53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 236 assertions must pass before merging any change.
+All 289 assertions must pass before merging any change.
 
 ---
 
@@ -334,6 +338,58 @@ All 236 assertions must pass before merging any change.
 
 ### Test injection
 `_setFetchFn(fn)` / `_resetFetchFn()` swap the HTTP implementation for tests — no real network calls in the test suite.
+
+### Test isolation note
+`openDotaRaw.test.js` generates unique match IDs per run (timestamp suffix) so cached rows from prior runs never cause false cache-hit failures.
+
+---
+
+## Import Preview feature
+
+Shows all 10 players from a match before the user selects which slot is theirs. Does **not** write to `matches` or `match_events`.
+
+### Flow
+1. User opens **比赛预览** panel in the History tab (collapsible card at top).
+2. Enters a Match ID and clicks **预览**.
+3. Dashboard calls `POST /history/import/preview`.
+4. Server checks `raw_opendota_matches` cache; auto-fetches via `openDotaRawService.fetchAndCache` on cache miss.
+5. `importPreviewService.buildPreview()` transforms raw JSON into a 10-player preview.
+6. UI shows two columns (天辉 / 夜魇) with per-player K/D/A, GPM, XPM, LH/DN and the resolved hero name.
+
+### API
+
+| Method | Route | Body | Effect |
+|--------|-------|------|--------|
+| `POST` | `/history/import/preview` | `{ matchId }` | Returns preview (no DB write to matches/events) |
+
+### Response shape
+```json
+{
+  "matchId":    "12345678",
+  "duration":   2400,
+  "radiantWin": true,
+  "isParsed":   true,
+  "warnings":   [],
+  "players": [
+    { "playerSlot": 2, "team": "radiant", "accountId": 123,
+      "heroId": 96, "heroName": "半人马战行者（Centaur Warrunner）",
+      "kills": 5, "deaths": 2, "assists": 8,
+      "gpm": 450, "xpm": 520, "lastHits": 120, "denies": 5 }
+  ]
+}
+```
+
+### Hero localization
+`server/data/dotaHeroNames.js` maps `hero_id` (numeric) to display name.
+- 7 profile heroes: `中文（English）` format.
+- ~120 other heroes: English name.
+- Unknown IDs: `Hero #N` fallback.
+
+### `isParsed` flag
+`true` if at least one player has a non-empty `purchase_log`. `false` means OpenDota hasn't parsed the replay — key item timings will be unavailable for import.
+
+### UI component
+`client/src/components/MatchImportPreview.jsx` — collapsible card rendered at the top of the History tab (above `MatchHistory`). Expanding it reveals the input form and player grid.
 
 ---
 
@@ -466,6 +522,7 @@ dota-ai-coach/
 │       ├── suggestKeyItem.test.js     ← 18 assertions
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
+│       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

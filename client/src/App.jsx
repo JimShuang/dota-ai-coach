@@ -5,6 +5,7 @@ import EventTimeline from './components/EventTimeline';
 import OfflaneSetup from './components/OfflaneSetup';
 import MatchHistory from './components/MatchHistory';
 import LongTermTrends from './components/LongTermTrends';
+import MatchImportPreview from './components/MatchImportPreview';
 
 const styles = {
   app: {
@@ -153,7 +154,10 @@ export default function App() {
 
       {/* Tab: 历史记录 */}
       {activeTab === 'history' && (
-        <MatchHistory />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          <MatchImportPreview />
+          <MatchHistory />
+        </div>
       )}
 
       {/* Tab: 长期趋势 */}

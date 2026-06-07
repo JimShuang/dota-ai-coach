@@ -22,11 +22,13 @@ function assert(condition, message) {
 
 // ── Mock data ──────────────────────────────────────────────────────────────
 
-const MATCH_OK_ID        = 'raw_test_0001';
-const MATCH_UNPARSED_ID  = 'raw_test_0002';
-const MATCH_NO_PLAYERS_ID = 'raw_test_0003';
-const MATCH_NO_RADIANT_ID = 'raw_test_0004';
-const MATCH_FORCE_ID     = 'raw_test_0005';
+// Unique per run so prior cached rows never interfere
+const RUN = Date.now().toString().slice(-7);
+const MATCH_OK_ID         = `raw_t${RUN}_ok`;
+const MATCH_UNPARSED_ID   = `raw_t${RUN}_up`;
+const MATCH_NO_PLAYERS_ID = `raw_t${RUN}_np`;
+const MATCH_NO_RADIANT_ID = `raw_t${RUN}_nr`;
+const MATCH_FORCE_ID      = `raw_t${RUN}_fo`;
 
 const MOCK_OK = {
   match_id: 10001,
