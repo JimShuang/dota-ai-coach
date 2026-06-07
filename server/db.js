@@ -64,6 +64,14 @@ db.exec(`
     is_excluded INTEGER DEFAULT 0,
     excluded_at TEXT,
     excluded_reason TEXT,
+    import_source TEXT,
+    source TEXT DEFAULT 'gsi',
+    imported_at TEXT,
+    import_match_id TEXT,
+    player_slot INTEGER,
+    account_id INTEGER,
+    radiant_win INTEGER,
+    team TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -107,6 +115,13 @@ const _migrations = [
   "ALTER TABLE matches ADD COLUMN excluded_at TEXT",
   "ALTER TABLE matches ADD COLUMN excluded_reason TEXT",
   "ALTER TABLE matches ADD COLUMN import_source TEXT",
+  "ALTER TABLE matches ADD COLUMN source TEXT DEFAULT 'gsi'",
+  "ALTER TABLE matches ADD COLUMN imported_at TEXT",
+  "ALTER TABLE matches ADD COLUMN import_match_id TEXT",
+  "ALTER TABLE matches ADD COLUMN player_slot INTEGER",
+  "ALTER TABLE matches ADD COLUMN account_id INTEGER",
+  "ALTER TABLE matches ADD COLUMN radiant_win INTEGER",
+  "ALTER TABLE matches ADD COLUMN team TEXT",
 ];
 for (const sql of _migrations) {
   try { db.exec(sql); } catch (_) { /* column already exists */ }
@@ -187,7 +202,9 @@ function saveMatch(row) {
        suggested_key_item, user_override_key_item,
        overall_grade, one_thing_to_improve,
        pre_key_item_deaths, spike_unused_count, low_farm_windows,
-       import_source)
+       import_source,
+       source, imported_at, import_match_id,
+       player_slot, account_id, radiant_win, team)
     VALUES
       (@match_id, @hero, @role, @archetype, @playstyle, @result,
        @start_time, @end_time, @duration,
@@ -195,8 +212,20 @@ function saveMatch(row) {
        @suggested_key_item, @user_override_key_item,
        @overall_grade, @one_thing_to_improve,
        @pre_key_item_deaths, @spike_unused_count, @low_farm_windows,
-       @import_source)
-  `).run({ import_source: null, ...row });
+       @import_source,
+       @source, @imported_at, @import_match_id,
+       @player_slot, @account_id, @radiant_win, @team)
+  `).run({
+    import_source:    null,
+    source:           'gsi',
+    imported_at:      null,
+    import_match_id:  null,
+    player_slot:      null,
+    account_id:       null,
+    radiant_win:      null,
+    team:             null,
+    ...row,
+  });
 }
 
 function saveMatchEvents(matchId, events) {

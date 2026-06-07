@@ -16,6 +16,7 @@ const { persistMatch } = require('./matchHistory');
 const { previewMatch, importMatch } = require('./matchImporter');
 const { fetchAndCache, getCached } = require('./openDotaRawService');
 const { buildPreview } = require('./importPreviewService');
+const { confirmImport } = require('./importConfirmService');
 
 const app = express();
 const PORT = 3001;
@@ -273,6 +274,22 @@ app.post('/history/import/preview', async (req, res) => {
     const status = err.code === 'NOT_FOUND'    ? 404
                  : err.code === 'RATE_LIMITED' ? 429
                  : 400;
+    res.status(status).json({ error: err.message, code: err.code || 'UNKNOWN' });
+  }
+});
+
+// ── Import confirm ─────────────────────────────────────────────────────────
+
+app.post('/history/import/confirm', (req, res) => {
+  const { matchId, playerSlot } = req.body || {};
+  if (matchId == null || playerSlot == null) {
+    return res.status(400).json({ error: '缺少 matchId 或 playerSlot' });
+  }
+  try {
+    const result = confirmImport(matchId, playerSlot);
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    const status = err.code === 'DUPLICATE' ? 409 : 400;
     res.status(status).json({ error: err.message, code: err.code || 'UNKNOWN' });
   }
 });

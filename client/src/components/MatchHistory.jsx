@@ -102,7 +102,9 @@ function MatchDetail({ matchId, onBack }) {
         </span>
         <Badge text={m.result || '未知'} color={resultCfg.color} bg={resultCfg.bg} />
         {m.overall_grade && <Badge text={m.overall_grade} color={gradeColor} />}
-        {m.import_source && <Badge text="导入" color="#79c0ff" bg="#0d2137" />}
+        {m.source === 'opendota_import'
+          ? <Badge text="OpenDota 导入" color="#79c0ff" bg="#0d2137" />
+          : <Badge text="Live GSI" color="#8b949e" bg="#21262d" />}
         <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#8b949e' }}>
           {formatDate(m.end_time)}
           {m.duration ? ` · ${Math.round(m.duration / 60)} 分钟` : ''}
@@ -604,7 +606,7 @@ export default function MatchHistory() {
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   <Badge text={m.result || '—'} color={resultCfg.color} bg={resultCfg.bg} />
                   {m.overall_grade && <Badge text={m.overall_grade} color={gradeColor} />}
-                  {m.import_source && <Badge text="导入" color="#79c0ff" bg="#0d2137" />}
+                  {m.source === 'opendota_import' && <Badge text="OpenDota 导入" color="#79c0ff" bg="#0d2137" />}
                   {isExcluded && <Badge text="已排除" color="#8b949e" bg="#30363d" />}
                 </div>
 

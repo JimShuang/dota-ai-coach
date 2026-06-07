@@ -62,7 +62,8 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/matchImporter.js` | Import match by ID via OpenDota API; reconstructs events + timings |
 | `server/openDotaRawService.js` | Raw OpenDota cache: fetch → store full response in `raw_opendota_matches` |
 | `server/importPreviewService.js` | Pure: `buildPreview(rawMatchData)` → structured 10-player preview object |
-| `server/data/dotaHeroNames.js` | `hero_id` → display name map (~130 heroes; profile heroes in Chinese) |
+| `server/data/dotaHeroNames.js` | `hero_id` → display name + `hero_id` → internal name (`npc_dota_hero_xxx`) maps |
+| `server/importConfirmService.js` | `confirmImport(matchId, playerSlot)` — normalises player data into a `matches` row |
 
 ---
 
@@ -211,7 +212,14 @@ matches (id, match_id UNIQUE, hero, role, archetype, playstyle, result,
          is_excluded INTEGER DEFAULT 0,   -- Exclude Match feature
          excluded_at TEXT,                -- datetime('now') when excluded
          excluded_reason TEXT,            -- bot_test | unranked | development_test | corrupted_data | duplicate | other
-         import_source TEXT,              -- NULL = live GSI match; 'opendota' = imported via OpenDota API
+         import_source TEXT,              -- legacy; NULL for GSI, 'opendota' for old matchImporter flow
+         source TEXT DEFAULT 'gsi',      -- 'gsi' | 'opendota_import'
+         imported_at TEXT,               -- ISO timestamp when confirm-imported
+         import_match_id TEXT,           -- original Dota match_id (before synthetic suffix)
+         player_slot INTEGER,            -- 0-4 radiant, 128-132 dire
+         account_id INTEGER,             -- Steam account_id of imported player
+         radiant_win INTEGER,            -- 1 = radiant won, 0 = dire won, NULL = unknown
+         team TEXT,                      -- 'radiant' | 'dire'
          created_at)
 
 -- Event timeline per match (all 10 types)
@@ -286,11 +294,12 @@ server/tests/
   matchImporter.test.js     39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
   openDotaRaw.test.js       47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
   importPreview.test.js     53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
+  importConfirm.test.js     56 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 289 assertions must pass before merging any change.
+All 345 assertions must pass before merging any change.
 
 ---
 
@@ -390,6 +399,46 @@ Shows all 10 players from a match before the user selects which slot is theirs. 
 
 ### UI component
 `client/src/components/MatchImportPreview.jsx` — collapsible card rendered at the top of the History tab (above `MatchHistory`). Expanding it reveals the input form and player grid.
+
+---
+
+## Import Confirm feature
+
+Writes a selected player's match data from the OpenDota raw cache into the `matches` table.
+No events or key_item_timings are generated at this stage.
+
+### Flow
+1. User sees the 10-player preview in `MatchImportPreview.jsx`.
+2. Clicks **选择** on their row → `POST /history/import/confirm { matchId, playerSlot }`.
+3. Server calls `confirmImport(matchId, playerSlot)` from `importConfirmService.js`.
+4. Service reads raw cache via `getCached(matchId)`, normalises the player into a `matches` row, calls `saveMatch()`.
+5. UI shows a green success banner; the match appears immediately in History.
+
+### `match_id` scheme for imported rows
+`{dotaMatchId}_od{playerSlot}` — e.g., `8838859325_od2`. Allows multiple player slots from the same match without conflicting on the `match_id UNIQUE` index. `import_match_id` stores the original Dota match ID.
+
+### Dedup
+`matchExists(syntheticId)` before write → 409 DUPLICATE if already imported.
+`getCached(matchId) === null` → 400 CACHE_MISS (preview must run first).
+
+### `source` field
+| Value | Where set | Meaning |
+|-------|-----------|---------|
+| `'gsi'` | default / all live matches | Recorded from Dota 2 GSI |
+| `'opendota_import'` | `confirmImport()` | Imported via OpenDota API |
+
+### API
+
+| Method | Route | Body | Effect |
+|--------|-------|------|--------|
+| `POST` | `/history/import/confirm` | `{ matchId, playerSlot }` | Writes to matches; returns `{ ok, match_id, import_match_id, player_slot, hero, result, grade }` |
+
+### Match History labels
+- `source === 'opendota_import'` → **"OpenDota 导入"** badge (cyan)
+- All other matches → **"Live GSI"** badge (grey), shown in detail view header
+
+### Exclude compatibility
+Imported matches behave identically to GSI matches for exclude/include, long-term trends, and all existing queries.
 
 ---
 
@@ -523,6 +572,7 @@ dota-ai-coach/
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
+│       ├── importConfirm.test.js      ← 56 assertions (normalizeForMatch, confirmImport)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)
