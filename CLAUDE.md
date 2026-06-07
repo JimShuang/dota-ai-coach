@@ -59,6 +59,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/rules/offlaneRules.js` | Offlane-specific rules (key item near-complete, spike unused…) |
 | `server/rules/archetypeRules.js` | Archetype-specific coaching (initiator, bully, aura…) |
 | `server/matchImporter.js` | Import match by ID via OpenDota API; reconstructs events + timings |
+| `server/openDotaRawService.js` | Raw OpenDota cache: fetch → store full response in `raw_opendota_matches` |
 
 ---
 
@@ -220,9 +221,18 @@ key_item_timings (id, match_id, item_name,
                   completed, completed_time,
                   deaths_before_completion, power_spike_used,
                   created_at)
+
+-- Raw OpenDota API response cache
+raw_opendota_matches (match_id TEXT PRIMARY KEY,
+                      raw_json TEXT NOT NULL,        -- full OpenDota response as JSON string
+                      parsed_status TEXT,            -- 'ok' | 'unparsed' | 'no_players'
+                      fetched_at TEXT,               -- datetime('now') at insert/replace time
+                      warnings_json TEXT)            -- JSON array of warning strings
 ```
 
 `INSERT OR IGNORE` + in-memory `persistedIds` Set prevent duplicate persistence across multiple POST_GAME ticks.
+
+`raw_opendota_matches` uses `INSERT OR REPLACE` so `force: true` refreshes the cache row.
 
 ---
 
@@ -271,11 +281,12 @@ server/tests/
   matchHistory.test.js      79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
   eventLogger.test.js       53 assertions — death snapshot, item fields, normalizeItems
   matchImporter.test.js     39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
+  openDotaRaw.test.js       47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 189 assertions must pass before merging any change.
+All 236 assertions must pass before merging any change.
 
 ---
 
@@ -292,6 +303,37 @@ All 189 assertions must pass before merging any change.
 5. Add `ITEM_COSTS` entries for any new key items.
 6. Add hero to `HERO_ZH` in `client/src/heroItemNames.js`.
 7. Optionally add archetype-specific rules to `server/rules/archetypeRules.js`.
+
+---
+
+## OpenDota raw cache
+
+`server/openDotaRawService.js` is a standalone cache layer that sits **between** the network and any downstream consumer (currently `matchImporter.js`).
+
+### Behaviour
+- **Cache-first by default**: `fetchAndCache(matchId)` returns the cached DB row on second call without hitting the network.
+- **Force refresh**: `fetchAndCache(matchId, { force: true })` always re-fetches and overwrites the cache (`INSERT OR REPLACE`).
+- **Never caches errors**: 404 / 429 / network failures throw immediately and leave the DB unchanged.
+- **Always caches content**: `unparsed` and `no_players` responses are stored so repeat calls stay offline.
+
+### `parsed_status` values
+| Value | Meaning |
+|-------|---------|
+| `ok` | Players present + at least one player has `purchase_log` entries |
+| `unparsed` | Players present but OpenDota hasn't parsed the replay (`purchase_log` null/empty everywhere) |
+| `no_players` | `players` array missing or empty |
+
+### Error codes
+`NOT_FOUND` (404) · `RATE_LIMITED` (429) · `HTTP_ERROR` · `NETWORK_ERROR` · `TIMEOUT`
+
+### API routes
+| Method | Route | Body/Params | Effect |
+|--------|-------|-------------|--------|
+| `POST` | `/opendota/fetch` | `{ matchId, force? }` | Fetch + cache; returns metadata (no raw payload) |
+| `GET`  | `/opendota/raw/:matchId` | — | Return full cached response with raw_json as object |
+
+### Test injection
+`_setFetchFn(fn)` / `_resetFetchFn()` swap the HTTP implementation for tests — no real network calls in the test suite.
 
 ---
 
@@ -406,6 +448,7 @@ dota-ai-coach/
 │   ├── matchHistory.js                ← persistMatch() + computeKeyItemTimings()
 │   ├── suggestKeyItem.js              ← pure function: next key item inference
 │   ├── matchImporter.js               ← Import Match: OpenDota fetch + event reconstruction
+│   ├── openDotaRawService.js          ← Raw cache layer: fetch → raw_opendota_matches table
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -422,6 +465,7 @@ dota-ai-coach/
 │       ├── matchHistory.test.js       ← 79 assertions
 │       ├── suggestKeyItem.test.js     ← 18 assertions
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
+│       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

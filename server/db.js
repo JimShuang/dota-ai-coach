@@ -90,6 +90,17 @@ db.exec(`
   );
 `);
 
+// Raw OpenDota cache table (new table — IF NOT EXISTS handles fresh + existing DBs)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS raw_opendota_matches (
+    match_id     TEXT PRIMARY KEY,
+    raw_json     TEXT NOT NULL,
+    parsed_status TEXT,
+    fetched_at   TEXT DEFAULT (datetime('now')),
+    warnings_json TEXT
+  );
+`);
+
 // Migrate existing DBs that pre-date added columns
 const _migrations = [
   "ALTER TABLE matches ADD COLUMN is_excluded INTEGER DEFAULT 0",
@@ -268,9 +279,28 @@ function getLongTermStats(recentCount = 10) {
   };
 }
 
+// ── Raw OpenDota cache ─────────────────────────────────────────────────────
+
+function saveRawOpendotaMatch(matchId, rawJson, parsedStatus, warningsJson) {
+  return db.prepare(`
+    INSERT OR REPLACE INTO raw_opendota_matches
+      (match_id, raw_json, parsed_status, fetched_at, warnings_json)
+    VALUES (?, ?, ?, datetime('now'), ?)
+  `).run(matchId, rawJson, parsedStatus, warningsJson);
+}
+
+function getRawOpendotaMatch(matchId) {
+  return db.prepare('SELECT * FROM raw_opendota_matches WHERE match_id = ?').get(matchId) || null;
+}
+
+function rawOpendotaMatchExists(matchId) {
+  return !!db.prepare('SELECT 1 FROM raw_opendota_matches WHERE match_id = ?').get(matchId);
+}
+
 module.exports = {
   saveGameState, saveAlert, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
   matchExists, saveMatch, saveMatchEvents, saveKeyItemTimings,
   getMatches, getMatchById, getLongTermStats,
   excludeMatch, includeMatch,
+  saveRawOpendotaMatch, getRawOpendotaMatch, rawOpendotaMatchExists,
 };

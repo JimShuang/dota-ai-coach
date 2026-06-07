@@ -14,6 +14,7 @@ const { PROFILES, getProfileByDotaName, getProfileKey } = require('./data/offlan
 const { suggestKeyItem } = require('./suggestKeyItem');
 const { persistMatch } = require('./matchHistory');
 const { previewMatch, importMatch } = require('./matchImporter');
+const { fetchAndCache, getCached } = require('./openDotaRawService');
 
 const app = express();
 const PORT = 3001;
@@ -224,6 +225,28 @@ app.get('/api/history/matches/:matchId', (req, res) => {
 app.get('/api/history/stats', (req, res) => {
   const recentCount = parseInt(req.query.recent) || 10;
   res.json(getLongTermStats(recentCount));
+});
+
+// ── OpenDota raw cache ─────────────────────────────────────────────────────
+
+app.post('/opendota/fetch', async (req, res) => {
+  const { matchId, force = false } = req.body || {};
+  if (!matchId) return res.status(400).json({ error: '缺少 matchId' });
+  try {
+    const result = await fetchAndCache(matchId, { force: !!force });
+    res.json(result);
+  } catch (err) {
+    const status = err.code === 'NOT_FOUND' ? 404
+                 : err.code === 'RATE_LIMITED' ? 429
+                 : 400;
+    res.status(status).json({ error: err.message, code: err.code || 'UNKNOWN' });
+  }
+});
+
+app.get('/opendota/raw/:matchId', (req, res) => {
+  const result = getCached(req.params.matchId);
+  if (!result) return res.status(404).json({ error: '缓存中没有该比赛，请先调用 POST /opendota/fetch' });
+  res.json(result);
 });
 
 // ── Match import (OpenDota) ────────────────────────────────────────────────
