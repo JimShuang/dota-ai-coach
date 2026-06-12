@@ -63,7 +63,8 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaRawService.js` | Raw OpenDota cache: fetch → store full response in `raw_opendota_matches` |
 | `server/importPreviewService.js` | Pure: `buildPreview(rawMatchData)` → structured 10-player preview object |
 | `server/data/dotaHeroNames.js` | `hero_id` → display name + `hero_id` → internal name (`npc_dota_hero_xxx`) maps |
-| `server/importConfirmService.js` | `confirmImport(matchId, playerSlot)` — normalises player data into a `matches` row |
+| `server/importConfirmService.js` | `confirmImport(matchId, playerSlot)` — writes `matches` row + key item timings |
+| `server/openDotaKeyItemAnalyzer.js` | Pure: `analyzeKeyItemTimings(matchId, player, profile)` — extracts timings from `purchase_log` |
 
 ---
 
@@ -294,12 +295,13 @@ server/tests/
   matchImporter.test.js     39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
   openDotaRaw.test.js       47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
   importPreview.test.js     53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
-  importConfirm.test.js     56 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB)
+  importConfirm.test.js        56 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB)
+  openDotaKeyItemAnalyzer.test.js  45 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 345 assertions must pass before merging any change.
+All 390 assertions must pass before merging any change.
 
 ---
 
@@ -420,6 +422,19 @@ No events or key_item_timings are generated at this stage.
 ### Dedup
 `matchExists(syntheticId)` before write → 409 DUPLICATE if already imported.
 `getCached(matchId) === null` → 400 CACHE_MISS (preview must run first).
+
+### Key item timings
+After writing the `matches` row, `confirmImport` calls `analyzeKeyItemTimings` (from `openDotaKeyItemAnalyzer.js`):
+- If the hero has a supported profile AND `purchase_log` is non-empty → writes `key_item_timings` rows
+- If `purchase_log` is absent or empty → skips (no guessing); History shows a "关键装备数据不可用" warning banner
+
+### `power_spike_used` in OpenDota imports
+`null` for completed spike items (whether the spike was "used" cannot be determined from the basic API).
+`0` for non-spike items or uncompleted items.
+History detail shows **N/A** for `null`, matching the existing `已转化` / `未转化` logic for GSI matches.
+
+### `deaths_before_completion` in OpenDota imports
+Always `0` — per-death timestamps are not in the OpenDota basic match API.
 
 ### `source` field
 | Value | Where set | Meaning |
@@ -572,7 +587,8 @@ dota-ai-coach/
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
-│       ├── importConfirm.test.js      ← 56 assertions (normalizeForMatch, confirmImport)
+│       ├── importConfirm.test.js          ← 56 assertions (normalizeForMatch, confirmImport)
+│       ├── openDotaKeyItemAnalyzer.test.js ← 45 assertions (buildPurchaseMap, analyzeKeyItemTimings)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

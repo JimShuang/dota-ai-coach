@@ -26,16 +26,6 @@ const RESULT_CONFIG = {
   '失败': { color: '#f85149', bg: '#3d1a1a' },
 };
 
-const IMPORTABLE_HEROES = [
-  { key: 'centaur',        label: '半人马战行者（Centaur Warrunner）' },
-  { key: 'tidehunter',     label: '潮汐猎手（Tidehunter）' },
-  { key: 'razor',          label: '电魂（Razor）' },
-  { key: 'viper',          label: '冥毒蛇（Viper）' },
-  { key: 'necrophos',      label: '死灵法师（Necrophos）' },
-  { key: 'abaddon',        label: '亚巴顿（Abaddon）' },
-  { key: 'vengefulspirit', label: '复仇之魂（Vengeful Spirit）' },
-];
-
 function formatTime(seconds) {
   if (!seconds) return '';
   const m = Math.floor(Math.abs(seconds) / 60);
@@ -122,12 +112,11 @@ function MatchDetail({ matchId, onBack }) {
 
       {/* Analysis grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-        {/* Death analysis */}
         <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px' }}>
           <div style={{ fontSize: '12px', color: '#f85149', fontWeight: '600', marginBottom: '10px' }}>死亡分析</div>
           {[
-            { label: '总死亡',       value: m.deaths,              warn: m.deaths > 5 },
-            { label: '关键装备前死亡', value: m.pre_key_item_deaths,  warn: m.pre_key_item_deaths > 1 },
+            { label: '总死亡',        value: m.deaths,             warn: m.deaths > 5 },
+            { label: '关键装备前死亡', value: m.pre_key_item_deaths, warn: m.pre_key_item_deaths > 1 },
           ].map(({ label, value, warn }) => (
             <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
               <span style={{ fontSize: '12px', color: '#8b949e' }}>{label}</span>
@@ -135,8 +124,6 @@ function MatchDetail({ matchId, onBack }) {
             </div>
           ))}
         </div>
-
-        {/* Tempo analysis */}
         <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px' }}>
           <div style={{ fontSize: '12px', color: '#bc8cff', fontWeight: '600', marginBottom: '10px' }}>节奏分析</div>
           {[
@@ -151,8 +138,18 @@ function MatchDetail({ matchId, onBack }) {
         </div>
       </div>
 
-      {/* Key item timings */}
-      {keyItemTimings.length > 0 && (
+      {/* Key item timings — or unavailable note for unparsed OpenDota imports */}
+      {m.source === 'opendota_import' && keyItemTimings.length === 0 ? (
+        <div style={{
+          background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px',
+          display: 'flex', alignItems: 'center', gap: '8px',
+        }}>
+          <span style={{ color: '#e3b341' }}>⚠</span>
+          <span style={{ fontSize: '12px', color: '#8b949e' }}>
+            关键装备数据不可用 — 该比赛未解析（缺少购买记录）
+          </span>
+        </div>
+      ) : keyItemTimings.length > 0 ? (
         <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px' }}>
           <div style={{ fontSize: '12px', color: '#e3b341', fontWeight: '600', marginBottom: '10px' }}>关键装备时间线</div>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
@@ -170,10 +167,7 @@ function MatchDetail({ matchId, onBack }) {
                     {itemDisplayName(t.item_name)}
                   </td>
                   <td style={{ padding: '6px 8px' }}>
-                    <Badge
-                      text={t.completed ? '✓' : '✗'}
-                      color={t.completed ? '#56d364' : '#f85149'}
-                    />
+                    <Badge text={t.completed ? '✓' : '✗'} color={t.completed ? '#56d364' : '#f85149'} />
                   </td>
                   <td style={{ padding: '6px 8px', fontSize: '12px', color: '#79c0ff' }}>
                     {t.completed_time ? formatTime(t.completed_time) : '—'}
@@ -183,7 +177,9 @@ function MatchDetail({ matchId, onBack }) {
                   </td>
                   <td style={{ padding: '6px 8px' }}>
                     {t.completed
-                      ? <Badge text={t.power_spike_used ? '已转化' : '未转化'} color={t.power_spike_used ? '#56d364' : '#e3b341'} />
+                      ? t.power_spike_used === null
+                        ? <span style={{ fontSize: '11px', color: '#8b949e' }}>N/A</span>
+                        : <Badge text={t.power_spike_used ? '已转化' : '未转化'} color={t.power_spike_used ? '#56d364' : '#e3b341'} />
                       : <span style={{ color: '#8b949e', fontSize: '11px' }}>—</span>}
                   </td>
                 </tr>
@@ -191,7 +187,7 @@ function MatchDetail({ matchId, onBack }) {
             </tbody>
           </table>
         </div>
-      )}
+      ) : null}
 
       {/* One thing to improve */}
       {m.one_thing_to_improve && (
@@ -221,7 +217,6 @@ function MatchDetail({ matchId, onBack }) {
                 warning: '#e3b341', success: '#56d364', info: '#79c0ff',
               }[e.severity] || '#8b949e';
               const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
-
               let deathItems = [];
               if (snap) {
                 if (Array.isArray(snap.itemsAtDeath) && snap.itemsAtDeath.length > 0) {
@@ -230,7 +225,6 @@ function MatchDetail({ matchId, onBack }) {
                   deathItems = Object.values(snap.inventoryAtDeath).filter((n) => n && n !== 'item_tpscroll');
                 }
               }
-
               return (
                 <div key={e.id} style={{ padding: '5px 0', borderBottom: '1px solid #30363d22' }}>
                   <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
@@ -254,12 +248,8 @@ function MatchDetail({ matchId, onBack }) {
                       {deathItems.length > 0 && (
                         <span>道具：<span style={{ color: '#8b949e' }}>{deathItems.map(itemDisplayName).join('、')}</span></span>
                       )}
-                      {snap.hadTpAtDeath === false && (
-                        <span style={{ color: '#e3b341' }}>无TP</span>
-                      )}
-                      {snap.wasNearKeyItem && (
-                        <span style={{ color: '#f85149' }}>差钱 &lt;600</span>
-                      )}
+                      {snap.hadTpAtDeath === false && <span style={{ color: '#e3b341' }}>无TP</span>}
+                      {snap.wasNearKeyItem && <span style={{ color: '#f85149' }}>差钱 &lt;600</span>}
                     </div>
                   )}
                 </div>
@@ -281,210 +271,16 @@ const EXCLUDE_REASONS = [
   { value: 'other',            label: '其他' },
 ];
 
-// ── Import dialog ──────────────────────────────────────────────────────────
-
-function ImportDialog({ onClose, onImported }) {
-  const [step, setStep]           = useState('input');   // 'input' | 'preview'
-  const [matchId, setMatchId]     = useState('');
-  const [heroKey, setHeroKey]     = useState('centaur');
-  const [preview, setPreview]     = useState(null);
-  const [fetching, setFetching]   = useState(false);
-  const [error, setError]         = useState('');
-
-  async function handlePreview() {
-    setError('');
-    setFetching(true);
-    try {
-      const r = await fetch('/api/history/import/preview', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ matchId: matchId.trim(), heroKey }),
-      });
-      const data = await r.json();
-      if (!r.ok) { setError(data.error || '获取失败，请检查比赛 ID 和英雄是否正确'); }
-      else        { setPreview(data); setStep('preview'); }
-    } catch {
-      setError('网络错误，请重试');
-    } finally {
-      setFetching(false);
-    }
-  }
-
-  async function handleConfirm() {
-    setError('');
-    setFetching(true);
-    try {
-      const r = await fetch('/api/history/import', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ matchId: matchId.trim(), heroKey }),
-      });
-      const data = await r.json();
-      if (!r.ok) { setError(data.error || '导入失败'); }
-      else        { onImported(); onClose(); }
-    } catch {
-      setError('导入失败，请重试');
-    } finally {
-      setFetching(false);
-    }
-  }
-
-  const resultCfg = preview ? (RESULT_CONFIG[preview.result] || { color: '#8b949e', bg: '#161b22' }) : null;
-
-  return (
-    <div
-      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-      onClick={onClose}
-    >
-      <div
-        style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: '12px', padding: '24px', width: '480px', maxWidth: '90vw' }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {step === 'input' && (
-          <>
-            <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3', marginBottom: '4px' }}>
-              导入比赛
-            </div>
-            <div style={{ fontSize: '12px', color: '#8b949e', marginBottom: '20px' }}>
-              通过 OpenDota 导入比赛数据（比赛 ID 可在游戏结算界面或 Dotabuff/OpenDota 上查看）
-            </div>
-
-            <div style={{ marginBottom: '14px' }}>
-              <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>比赛 ID</label>
-              <input
-                value={matchId}
-                onChange={(e) => setMatchId(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && matchId.trim() && !fetching && handlePreview()}
-                placeholder="例如：7945123456"
-                style={{
-                  width: '100%', boxSizing: 'border-box',
-                  background: '#0d1117', border: '1px solid #30363d', borderRadius: '6px',
-                  padding: '8px 12px', color: '#e6edf3', fontSize: '13px',
-                }}
-              />
-            </div>
-
-            <div style={{ marginBottom: '20px' }}>
-              <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>你使用的英雄</label>
-              <select
-                value={heroKey}
-                onChange={(e) => setHeroKey(e.target.value)}
-                style={{
-                  width: '100%', background: '#0d1117', border: '1px solid #30363d',
-                  borderRadius: '6px', padding: '8px 12px', color: '#e6edf3',
-                  fontSize: '13px', cursor: 'pointer',
-                }}
-              >
-                {IMPORTABLE_HEROES.map((h) => (
-                  <option key={h.key} value={h.key}>{h.label}</option>
-                ))}
-              </select>
-            </div>
-
-            {error && <div style={{ color: '#f85149', fontSize: '12px', marginBottom: '14px' }}>{error}</div>}
-
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button onClick={onClose} style={{ background: 'transparent', border: '1px solid #30363d', borderRadius: '6px', padding: '7px 16px', color: '#8b949e', fontSize: '12px', cursor: 'pointer' }}>
-                取消
-              </button>
-              <button
-                onClick={handlePreview}
-                disabled={!matchId.trim() || fetching}
-                style={{
-                  background: '#1f3b5a', border: '1px solid #79c0ff44', borderRadius: '6px',
-                  padding: '7px 16px', color: '#79c0ff', fontSize: '12px', cursor: 'pointer',
-                  fontWeight: '600', opacity: (!matchId.trim() || fetching) ? 0.5 : 1,
-                }}
-              >
-                {fetching ? '获取中...' : '预览'}
-              </button>
-            </div>
-          </>
-        )}
-
-        {step === 'preview' && preview && (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
-              <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3' }}>
-                确认导入
-              </div>
-              <Badge text={preview.result} color={resultCfg.color} bg={resultCfg.bg} />
-              <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#8b949e' }}>
-                {preview.heroNameZh} · {Math.round(preview.duration / 60)} 分钟
-              </span>
-            </div>
-
-            {/* Stats */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '6px', marginBottom: '16px' }}>
-              {[
-                { label: 'K/D/A', value: `${preview.kills}/${preview.deaths}/${preview.assists}`, color: '#e6edf3' },
-                { label: 'GPM',   value: preview.gpm,       color: '#e3b341' },
-                { label: 'XPM',   value: preview.xpm,       color: '#bc8cff' },
-                { label: '补刀',  value: preview.last_hits,  color: '#79c0ff' },
-              ].map(({ label, value, color }) => (
-                <div key={label} style={{ background: '#0d1117', borderRadius: '6px', padding: '8px', textAlign: 'center' }}>
-                  <div style={{ fontSize: '14px', fontWeight: '700', color }}>{value}</div>
-                  <div style={{ fontSize: '10px', color: '#8b949e', marginTop: '2px' }}>{label}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Key item timings preview */}
-            {preview.keyItemTimings?.length > 0 && (
-              <div style={{ background: '#0d1117', borderRadius: '8px', padding: '12px', marginBottom: '16px' }}>
-                <div style={{ fontSize: '11px', color: '#e3b341', fontWeight: '600', marginBottom: '8px' }}>关键装备时间线</div>
-                {preview.keyItemTimings.map((t) => (
-                  <div key={t.item_name} style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', fontSize: '12px' }}>
-                    <span style={{ color: t.completed ? '#c9d1d9' : '#8b949e44' }}>
-                      {itemDisplayName(t.item_name)}
-                    </span>
-                    <span style={{ color: t.completed ? '#79c0ff' : '#30363d', fontVariantNumeric: 'tabular-nums' }}>
-                      {t.completed && t.completed_time != null ? formatTime(t.completed_time) : (t.completed ? '已完成' : '未完成')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {error && <div style={{ color: '#f85149', fontSize: '12px', marginBottom: '14px' }}>{error}</div>}
-
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-              <button
-                onClick={() => { setStep('input'); setError(''); }}
-                style={{ background: 'transparent', border: '1px solid #30363d', borderRadius: '6px', padding: '7px 16px', color: '#8b949e', fontSize: '12px', cursor: 'pointer' }}
-              >
-                ← 返回
-              </button>
-              <button
-                onClick={handleConfirm}
-                disabled={fetching}
-                style={{
-                  background: '#0d2b0d', border: '1px solid #56d36444', borderRadius: '6px',
-                  padding: '7px 16px', color: '#56d364', fontSize: '12px', cursor: 'pointer',
-                  fontWeight: '600', opacity: fetching ? 0.5 : 1,
-                }}
-              >
-                {fetching ? '导入中...' : '确认导入'}
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
 // ── Match list ─────────────────────────────────────────────────────────────
 
 export default function MatchHistory() {
-  const [matches, setMatches]           = useState([]);
-  const [loading, setLoading]           = useState(true);
-  const [selectedId, setSelectedId]     = useState(null);
-  const [showExcluded, setShowExcluded] = useState(false);
+  const [matches, setMatches]             = useState([]);
+  const [loading, setLoading]             = useState(true);
+  const [selectedId, setSelectedId]       = useState(null);
+  const [showExcluded, setShowExcluded]   = useState(false);
   const [excludeDialog, setExcludeDialog] = useState(null);
   const [excludeReason, setExcludeReason] = useState('bot_test');
-  const [excluding, setExcluding]       = useState(false);
-  const [showImport, setShowImport]     = useState(false);
+  const [excluding, setExcluding]         = useState(false);
 
   function loadMatches(incExcluded) {
     setLoading(true);
@@ -534,18 +330,6 @@ export default function MatchHistory() {
           历史比赛记录
           {matches.length > 0 && <span style={{ color: '#f0883e', marginLeft: '8px' }}>({matches.length} 局)</span>}
         </div>
-
-        <button
-          onClick={() => setShowImport(true)}
-          style={{
-            background: '#1f3b5a', border: '1px solid #79c0ff44', borderRadius: '6px',
-            padding: '4px 14px', color: '#79c0ff', fontSize: '12px', cursor: 'pointer',
-            fontWeight: '600',
-          }}
-        >
-          + 导入比赛
-        </button>
-
         <label style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', userSelect: 'none' }}>
           <input
             type="checkbox"
@@ -563,7 +347,7 @@ export default function MatchHistory() {
         <div style={{ textAlign: 'center', color: '#8b949e', padding: '40px 0' }}>
           暂无历史记录
           <br />
-          <span style={{ fontSize: '12px' }}>比赛结束后自动保存，或点击「导入比赛」手动导入</span>
+          <span style={{ fontSize: '12px' }}>比赛结束后自动保存，或使用上方「比赛预览」导入历史比赛</span>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
@@ -586,13 +370,8 @@ export default function MatchHistory() {
                 onMouseEnter={(e) => { if (!isExcluded) e.currentTarget.style.borderColor = '#f0883e'; }}
                 onMouseLeave={(e) => { if (!isExcluded) e.currentTarget.style.borderColor = '#30363d'; }}
               >
-                {/* Result indicator */}
-                <div style={{
-                  width: '4px', alignSelf: 'stretch', borderRadius: '2px',
-                  background: resultCfg.color, flexShrink: 0,
-                }} />
+                <div style={{ width: '4px', alignSelf: 'stretch', borderRadius: '2px', background: resultCfg.color, flexShrink: 0 }} />
 
-                {/* Hero */}
                 <div style={{ minWidth: '120px' }}>
                   <div style={{ fontSize: '13px', fontWeight: '700', color: '#f0883e' }}>
                     {heroDisplayName(m.hero)}
@@ -602,7 +381,6 @@ export default function MatchHistory() {
                   </div>
                 </div>
 
-                {/* Result + grade + badges */}
                 <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
                   <Badge text={m.result || '—'} color={resultCfg.color} bg={resultCfg.bg} />
                   {m.overall_grade && <Badge text={m.overall_grade} color={gradeColor} />}
@@ -610,38 +388,26 @@ export default function MatchHistory() {
                   {isExcluded && <Badge text="已排除" color="#8b949e" bg="#30363d" />}
                 </div>
 
-                {/* K/D/A */}
                 <div style={{ fontSize: '13px', color: '#e6edf3', minWidth: '80px' }}>
                   {m.kills}/{m.deaths}/{m.assists}
                 </div>
 
-                {/* GPM */}
                 <div style={{ fontSize: '12px', color: '#e3b341', minWidth: '80px' }}>
                   {Math.round(m.gpm)} GPM
                 </div>
 
-                {/* Improvement hint */}
-                <div style={{
-                  flex: 1, fontSize: '11px', color: '#8b949e',
-                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                }}>
+                <div style={{ flex: 1, fontSize: '11px', color: '#8b949e', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                   {m.one_thing_to_improve || ''}
                 </div>
 
-                {/* Date */}
                 <div style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0 }}>
                   {formatDate(m.end_time)}
                 </div>
 
-                {/* Exclude / restore button */}
                 {isExcluded ? (
                   <button
                     onClick={(e) => handleInclude(m.match_id, e)}
-                    style={{
-                      flexShrink: 0, background: 'transparent', border: '1px solid #30363d',
-                      borderRadius: '5px', padding: '3px 10px', color: '#8b949e',
-                      fontSize: '11px', cursor: 'pointer',
-                    }}
+                    style={{ flexShrink: 0, background: 'transparent', border: '1px solid #30363d', borderRadius: '5px', padding: '3px 10px', color: '#8b949e', fontSize: '11px', cursor: 'pointer' }}
                   >
                     恢复
                   </button>
@@ -652,11 +418,7 @@ export default function MatchHistory() {
                       setExcludeReason('bot_test');
                       setExcludeDialog({ matchId: m.match_id, label: `${heroDisplayName(m.hero)} · ${formatDate(m.end_time)}` });
                     }}
-                    style={{
-                      flexShrink: 0, background: 'transparent', border: '1px solid #30363d',
-                      borderRadius: '5px', padding: '3px 10px', color: '#8b949e',
-                      fontSize: '11px', cursor: 'pointer',
-                    }}
+                    style={{ flexShrink: 0, background: 'transparent', border: '1px solid #30363d', borderRadius: '5px', padding: '3px 10px', color: '#8b949e', fontSize: '11px', cursor: 'pointer' }}
                   >
                     排除
                   </button>
@@ -669,48 +431,24 @@ export default function MatchHistory() {
         </div>
       )}
 
-      {/* Import dialog */}
-      {showImport && (
-        <ImportDialog
-          onClose={() => setShowImport(false)}
-          onImported={() => loadMatches(showExcluded)}
-        />
-      )}
-
       {/* Exclude confirmation dialog */}
       {excludeDialog && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          zIndex: 1000,
-        }}
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
           onClick={() => setExcludeDialog(null)}
         >
           <div
-            style={{
-              background: '#161b22', border: '1px solid #30363d',
-              borderRadius: '12px', padding: '24px', minWidth: '320px', maxWidth: '400px',
-            }}
+            style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: '12px', padding: '24px', minWidth: '320px', maxWidth: '400px' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3', marginBottom: '6px' }}>
-              排除比赛记录
-            </div>
-            <div style={{ fontSize: '12px', color: '#8b949e', marginBottom: '18px' }}>
-              {excludeDialog.label}
-            </div>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3', marginBottom: '6px' }}>排除比赛记录</div>
+            <div style={{ fontSize: '12px', color: '#8b949e', marginBottom: '18px' }}>{excludeDialog.label}</div>
             <div style={{ marginBottom: '18px' }}>
-              <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>
-                排除原因
-              </label>
+              <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>排除原因</label>
               <select
                 value={excludeReason}
                 onChange={(e) => setExcludeReason(e.target.value)}
-                style={{
-                  width: '100%', background: '#0d1117', border: '1px solid #30363d',
-                  borderRadius: '6px', padding: '8px 10px', color: '#e6edf3',
-                  fontSize: '13px', cursor: 'pointer',
-                }}
+                style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: '6px', padding: '8px 10px', color: '#e6edf3', fontSize: '13px', cursor: 'pointer' }}
               >
                 {EXCLUDE_REASONS.map((r) => (
                   <option key={r.value} value={r.value}>{r.label}</option>
@@ -720,23 +458,14 @@ export default function MatchHistory() {
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
               <button
                 onClick={() => setExcludeDialog(null)}
-                style={{
-                  background: 'transparent', border: '1px solid #30363d',
-                  borderRadius: '6px', padding: '7px 16px', color: '#8b949e',
-                  fontSize: '12px', cursor: 'pointer',
-                }}
+                style={{ background: 'transparent', border: '1px solid #30363d', borderRadius: '6px', padding: '7px 16px', color: '#8b949e', fontSize: '12px', cursor: 'pointer' }}
               >
                 取消
               </button>
               <button
                 onClick={handleExcludeConfirm}
                 disabled={excluding}
-                style={{
-                  background: '#3d1a1a', border: '1px solid #f85149',
-                  borderRadius: '6px', padding: '7px 16px', color: '#f85149',
-                  fontSize: '12px', cursor: 'pointer', fontWeight: '600',
-                  opacity: excluding ? 0.6 : 1,
-                }}
+                style={{ background: '#3d1a1a', border: '1px solid #f85149', borderRadius: '6px', padding: '7px 16px', color: '#f85149', fontSize: '12px', cursor: 'pointer', fontWeight: '600', opacity: excluding ? 0.6 : 1 }}
               >
                 {excluding ? '排除中...' : '确认排除'}
               </button>

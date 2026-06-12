@@ -1,16 +1,18 @@
 'use strict';
 
 // Confirms an OpenDota match import: normalises a selected player's data
-// into a matches-table row and persists it.
+// into a matches-table row, generates key_item_timings when purchase_log is
+// available, and persists both.
 //
-// Does NOT generate match_events or key_item_timings — those are a future step.
+// Does NOT generate match_events.
 // Does NOT hit the network — raw data must already be in raw_opendota_matches.
 
 const { getCached } = require('./openDotaRawService');
-const { matchExists, saveMatch } = require('./db');
+const { matchExists, saveMatch, saveKeyItemTimings } = require('./db');
 const { getProfileByDotaName } = require('./data/offlaneHeroProfiles');
 const { getHeroInternalName } = require('./data/dotaHeroNames');
 const { computeGrade, computeOneThingToImprove } = require('./matchImporter');
+const { analyzeKeyItemTimings } = require('./openDotaKeyItemAnalyzer');
 
 // ── Synthetic match_id ─────────────────────────────────────────────────────
 
@@ -124,13 +126,28 @@ function confirmImport(matchId, playerSlot) {
   const row = normalizeForMatch(matchId, Number(playerSlot), cached.raw_json);
   saveMatch(row);
 
+  // Generate key item timings if a supported hero profile exists
+  const player = cached.raw_json.players.find((p) => p.player_slot === Number(playerSlot));
+  const heroInternalName = getHeroInternalName(player?.hero_id);
+  const profile = heroInternalName ? getProfileByDotaName(heroInternalName) : null;
+
+  let keyItemsAvailable = false;
+  if (profile) {
+    const timingResult = analyzeKeyItemTimings(sid, player, profile);
+    keyItemsAvailable = timingResult.available;
+    if (timingResult.available && timingResult.timings.length > 0) {
+      saveKeyItemTimings(sid, timingResult.timings);
+    }
+  }
+
   return {
-    match_id:        sid,
-    import_match_id: String(matchId),
-    player_slot:     Number(playerSlot),
-    hero:            row.hero,
-    result:          row.result,
-    grade:           row.overall_grade,
+    match_id:          sid,
+    import_match_id:   String(matchId),
+    player_slot:       Number(playerSlot),
+    hero:              row.hero,
+    result:            row.result,
+    grade:             row.overall_grade,
+    keyItemsAvailable,
   };
 }
 
