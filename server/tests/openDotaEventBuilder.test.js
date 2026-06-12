@@ -1,6 +1,6 @@
 // Run: node server/tests/openDotaEventBuilder.test.js
 
-const { buildEventsFromOpenDota, isConsumable, CONSUMABLE_ITEMS } = require('../openDotaEventBuilder');
+const { buildEventsFromOpenDota, buildKillDeathEvents, isConsumable, CONSUMABLE_ITEMS } = require('../openDotaEventBuilder');
 const { analyzeKeyItemTimings } = require('../openDotaKeyItemAnalyzer');
 const { PROFILES } = require('../data/offlaneHeroProfiles');
 
@@ -188,6 +188,83 @@ assert(eNullWin.severity     === 'info',    'null radiant_win → info (unknown)
 assert(eNullWin.message.includes('未知'),  'null radiant_win → 未知');
 
 assert(eRadiantWin.game_time === 2400, 'game_end game_time = duration');
+
+// ── buildKillDeathEvents ──────────────────────────────────────────────────
+
+console.log('\n── buildKillDeathEvents ─────────────────────────────────────────────');
+
+const kd = buildKillDeathEvents({
+  kills:  [{ time: 300, victim: 'Axe' }, { time: 650, victim: '电魂（Razor）' }],
+  deaths: [{ time: 420, killer: 'Pudge' }],
+});
+
+const heroKills  = kd.filter(e => e.type === 'hero_kill');
+const heroDeaths = kd.filter(e => e.type === 'hero_death');
+
+assert(heroKills.length  === 2, `2 hero_kill events (got ${heroKills.length})`);
+assert(heroDeaths.length === 1, `1 hero_death event (got ${heroDeaths.length})`);
+
+// hero_kill shape
+const k1 = heroKills[0];
+assert(k1.game_time === 300,               'kill 1 game_time = 300');
+assert(k1.type      === 'hero_kill',       'kill type = hero_kill');
+assert(k1.severity  === 'success',         'kill severity = success');
+assert(k1.message   === '击杀 Axe',       'kill 1 message');
+assert(k1.snapshot.victim            === 'Axe',             'kill 1 snapshot.victim');
+assert(k1.snapshot.victimDisplayName === 'Axe',             'kill 1 snapshot.victimDisplayName');
+assert(k1.snapshot.killNumber        === 1,                  'kill 1 snapshot.killNumber = 1');
+assert(k1.snapshot.source            === 'opendota_import', 'kill 1 snapshot.source');
+assert(!('goldBeforeDeathPenalty' in k1.snapshot), 'no GSI gold field in kill snapshot');
+assert(!('itemsAtDeath'           in k1.snapshot), 'no itemsAtDeath in kill snapshot');
+
+const k2 = heroKills[1];
+assert(k2.game_time === 650,                       'kill 2 game_time = 650');
+assert(k2.snapshot.killNumber === 2,               'kill 2 snapshot.killNumber = 2');
+assert(k2.message === '击杀 电魂（Razor）',        'kill 2 message with Chinese name');
+assert(k2.snapshot.victim === '电魂（Razor）',     'kill 2 snapshot.victim = Chinese name');
+
+// hero_death shape
+const d1 = heroDeaths[0];
+assert(d1.game_time === 420,                        'death game_time = 420');
+assert(d1.type      === 'hero_death',               'death type = hero_death');
+assert(d1.severity  === 'danger',                   'death severity = danger');
+assert(d1.message   === '被 Pudge 击杀（第 1 次）', 'death 1 message');
+assert(d1.snapshot.killer            === 'Pudge',             'death 1 snapshot.killer');
+assert(d1.snapshot.killerDisplayName === 'Pudge',             'death 1 snapshot.killerDisplayName');
+assert(d1.snapshot.deathNumber       === 1,                    'death 1 snapshot.deathNumber = 1');
+assert(d1.snapshot.source            === 'opendota_import',   'death 1 snapshot.source');
+assert(!('goldBeforeDeathPenalty' in d1.snapshot), 'no goldBeforeDeathPenalty in death snapshot');
+assert(!('itemsAtDeath'           in d1.snapshot), 'no itemsAtDeath in death snapshot');
+assert(!('inventoryAtDeath'       in d1.snapshot), 'no inventoryAtDeath in death snapshot');
+assert(!('gpmAtDeath'             in d1.snapshot), 'no gpmAtDeath in death snapshot');
+
+// Multiple deaths — deathNumber increments
+const kdMulti = buildKillDeathEvents({
+  kills:  [],
+  deaths: [
+    { time: 100, killer: 'Axe'   },
+    { time: 300, killer: 'Pudge' },
+    { time: 500, killer: 'Axe'   },
+  ],
+});
+const multiDeaths = kdMulti.filter(e => e.type === 'hero_death');
+assert(multiDeaths.length === 3,              '3 hero_death events');
+assert(multiDeaths[0].snapshot.deathNumber === 1, 'first death deathNumber = 1');
+assert(multiDeaths[1].snapshot.deathNumber === 2, 'second death deathNumber = 2');
+assert(multiDeaths[2].snapshot.deathNumber === 3, 'third death deathNumber = 3');
+assert(multiDeaths[1].message === '被 Pudge 击杀（第 2 次）', 'second death message');
+
+// Empty input → empty array
+const kdEmpty   = buildKillDeathEvents({ kills: [], deaths: [] });
+assert(kdEmpty.length === 0, 'empty kills/deaths → empty array');
+
+// Missing fields default to empty arrays
+const kdDefault = buildKillDeathEvents({});
+assert(kdDefault.length === 0, 'missing kills/deaths properties → empty array');
+
+// No-arg call → empty array
+const kdNoArg   = buildKillDeathEvents();
+assert(kdNoArg.length === 0, 'no-arg call → empty array');
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

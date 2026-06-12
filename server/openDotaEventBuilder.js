@@ -118,4 +118,52 @@ function buildEventsFromOpenDota(player, profile, matchInfo) {
   return events;
 }
 
-module.exports = { buildEventsFromOpenDota, isConsumable, CONSUMABLE_ITEMS };
+// ── Kill / Death event builder ─────────────────────────────────────────────
+
+/**
+ * Build hero_kill and hero_death events from extractKillDeath output.
+ *
+ * Severity for hero_death is always 'danger' — GSI-side logic that computes
+ * 'critical' depends on gold/items not available in the basic OpenDota API.
+ * GSI-rich snapshot fields (gold, items, etc.) are intentionally omitted.
+ *
+ * @param {{ kills?: {time,victim}[], deaths?: {time,killer}[] }} killDeathResult
+ * @returns {object[]} Event objects ready for saveMatchEvents()
+ */
+function buildKillDeathEvents({ kills = [], deaths = [] } = {}) {
+  const events = [];
+
+  kills.forEach((kill, i) => {
+    events.push({
+      game_time: kill.time,
+      type:      'hero_kill',
+      severity:  'success',
+      message:   `击杀 ${kill.victim}`,
+      snapshot: {
+        victim:            kill.victim,
+        victimDisplayName: kill.victim,
+        killNumber:        i + 1,
+        source:            'opendota_import',
+      },
+    });
+  });
+
+  deaths.forEach((death, i) => {
+    events.push({
+      game_time: death.time,
+      type:      'hero_death',
+      severity:  'danger',
+      message:   `被 ${death.killer} 击杀（第 ${i + 1} 次）`,
+      snapshot: {
+        killer:            death.killer,
+        killerDisplayName: death.killer,
+        deathNumber:       i + 1,
+        source:            'opendota_import',
+      },
+    });
+  });
+
+  return events;
+}
+
+module.exports = { buildEventsFromOpenDota, buildKillDeathEvents, isConsumable, CONSUMABLE_ITEMS };

@@ -181,6 +181,10 @@ assert(typeof result.result   === 'string',             'confirmImport returns r
 assert(typeof result.grade    === 'string',             'confirmImport returns grade');
 assert(typeof result.events_count === 'number',         'confirmImport returns events_count');
 assert(result.events_count >= 1,                        'at least 1 event (game_end)');
+assert(typeof result.deathStats === 'object',           'confirmImport returns deathStats');
+assert(result.deathStats.total === 2,                   'deathStats.total = 2 (Centaur deaths in RAW_MATCH)');
+assert(result.deathStats.reconstructed === 0,           'deathStats.reconstructed = 0 (no kills_log)');
+assert(result.deathStats.missing === 2,                 'deathStats.missing = 2 (no kills_log)');
 
 // Verify match_events were written to DB
 const synId   = `${CI_MATCH_ID}_od2`;
@@ -219,6 +223,104 @@ let cacheErr = null;
 try { confirmImport(`missing_${RUN}`, 0); } catch (e) { cacheErr = e; }
 assert(cacheErr !== null,              'missing cache throws');
 assert(cacheErr.code === 'CACHE_MISS', 'missing cache error code = CACHE_MISS');
+
+// ── confirmImport: kill/death events + tower-death deathStats ─────────────
+
+console.log('\n── confirmImport with kills_log (hero_kill / hero_death events) ───────');
+
+// Centaur (slot 2) kills Axe at t=600; dies to Axe at t=400 and Pudge at t=700.
+// Player.deaths = 3 — the third death is a tower kill not in any kills_log.
+const RAW_MATCH_KILLS = {
+  match_id:    88001010,
+  radiant_win: true,
+  duration:    2400,
+  start_time:  1700002000,
+  players: [
+    {
+      player_slot: 2, hero_id: 96, account_id: 55520,
+      kills: 1, deaths: 3, assists: 2,
+      gold_per_min: 400, xp_per_min: 460, last_hits: 95, denies: 3,
+      net_worth: 14000,
+      kills_log: [{ time: 600, key: 'npc_dota_hero_axe' }],
+      purchase_log: [{ time: 540, key: 'vanguard' }],
+    },
+    {
+      player_slot: 130, hero_id: 2, account_id: 55521,  // Axe
+      kills: 1, deaths: 1, assists: 0,
+      gold_per_min: 460, xp_per_min: 530, last_hits: 170, denies: 7,
+      net_worth: 19000,
+      kills_log: [{ time: 400, key: 'npc_dota_hero_centaur' }],
+      purchase_log: null,
+    },
+    {
+      player_slot: 1, hero_id: 14, account_id: 55522,   // Pudge
+      kills: 2, deaths: 1, assists: 1,
+      gold_per_min: 350, xp_per_min: 390, last_hits: 75, denies: 2,
+      net_worth: 12000,
+      kills_log: [{ time: 700, key: 'npc_dota_hero_centaur' }],
+      purchase_log: null,
+    },
+  ],
+};
+
+const RUN2 = (Date.now() + 1).toString().slice(-7);
+const CI_MATCH_ID_2 = `ic_kd${RUN2}`;
+
+saveRawOpendotaMatch(
+  CI_MATCH_ID_2,
+  JSON.stringify({ ...RAW_MATCH_KILLS, match_id: CI_MATCH_ID_2 }),
+  'ok',
+  JSON.stringify([])
+);
+
+const result2 = confirmImport(CI_MATCH_ID_2, 2);
+
+// deathStats: 2 reconstructed (Axe + Pudge kills), 1 missing (tower), total 3
+assert(typeof result2.deathStats === 'object',        'result2 has deathStats');
+assert(result2.deathStats.total         === 3,        'deathStats.total = 3');
+assert(result2.deathStats.reconstructed === 2,        'deathStats.reconstructed = 2');
+assert(result2.deathStats.missing       === 1,        'deathStats.missing = 1 (tower kill)');
+
+const synId2   = `${CI_MATCH_ID_2}_od2`;
+const detail2  = getMatchById(synId2);
+assert(detail2 !== null,                              'getMatchById returns result');
+
+const kills2  = detail2.events.filter(e => e.type === 'hero_kill');
+const deaths2 = detail2.events.filter(e => e.type === 'hero_death');
+
+assert(kills2.length  === 1, `1 hero_kill event (got ${kills2.length})`);
+assert(deaths2.length === 2, `2 hero_death events — tower death absent (got ${deaths2.length})`);
+
+// hero_kill shape in DB
+const k1 = kills2[0];
+assert(k1.game_time === 600,              'hero_kill at t=600');
+assert(k1.severity  === 'success',        'hero_kill severity = success');
+assert(k1.message   === '击杀 Axe',      'hero_kill message');
+assert(k1.snapshot.killNumber   === 1,    'hero_kill snapshot.killNumber = 1');
+assert(k1.snapshot.source === 'opendota_import', 'hero_kill snapshot.source');
+
+// hero_death shapes in DB
+const d1 = deaths2[0];
+const d2 = deaths2[1];
+assert(d1.game_time === 400,                          'first hero_death at t=400');
+assert(d1.severity  === 'danger',                     'hero_death severity = danger');
+assert(d1.message   === '被 Axe 击杀（第 1 次）',    'first hero_death message (Axe)');
+assert(d1.snapshot.deathNumber === 1,                 'first hero_death deathNumber = 1');
+assert(!('goldBeforeDeathPenalty' in d1.snapshot),    'no GSI gold field in hero_death snapshot');
+assert(!('itemsAtDeath'           in d1.snapshot),    'no itemsAtDeath in hero_death snapshot');
+
+assert(d2.game_time === 700,                          'second hero_death at t=700');
+assert(d2.message   === '被 Pudge 击杀（第 2 次）',  'second hero_death message (Pudge)');
+assert(d2.snapshot.deathNumber === 2,                 'second hero_death deathNumber = 2');
+
+// All events (excluding game_end) must be in chronological order
+const timedEvents = detail2.events.filter(e => e.type !== 'game_end');
+for (let i = 1; i < timedEvents.length; i++) {
+  assert(
+    timedEvents[i].game_time >= timedEvents[i - 1].game_time,
+    `events sorted at index ${i}: t=${timedEvents[i - 1].game_time} → t=${timedEvents[i].game_time}`
+  );
+}
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

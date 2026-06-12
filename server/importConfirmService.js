@@ -12,7 +12,8 @@ const { getProfileByDotaName } = require('./data/offlaneHeroProfiles');
 const { getHeroInternalName } = require('./data/dotaHeroNames');
 const { computeGrade, computeOneThingToImprove } = require('./matchImporter');
 const { analyzeKeyItemTimings } = require('./openDotaKeyItemAnalyzer');
-const { buildEventsFromOpenDota } = require('./openDotaEventBuilder');
+const { buildEventsFromOpenDota, buildKillDeathEvents } = require('./openDotaEventBuilder');
+const { extractKillDeath } = require('./openDotaKillDeathExtractor');
 
 // ── Synthetic match_id ─────────────────────────────────────────────────────
 
@@ -140,15 +141,18 @@ function confirmImport(matchId, playerSlot) {
     }
   }
 
-  // Build and persist event timeline from purchase_log
+  // Build and persist event timeline — purchase events + kill/death events merged
   const isRadiant  = Number(playerSlot) < 128;
   const matchInfo  = {
     duration:   cached.raw_json.duration    || 0,
     radiantWin: cached.raw_json.radiant_win ?? null,
     team:       isRadiant ? 'radiant' : 'dire',
   };
-  const matchEvents = buildEventsFromOpenDota(player, profile, matchInfo);
-  saveMatchEvents(sid, matchEvents);
+  const purchaseEvents  = buildEventsFromOpenDota(player, profile, matchInfo);
+  const killDeath       = extractKillDeath(cached.raw_json.players, Number(playerSlot));
+  const kdEvents        = buildKillDeathEvents(killDeath);
+  const allEvents       = [...purchaseEvents, ...kdEvents].sort((a, b) => a.game_time - b.game_time);
+  saveMatchEvents(sid, allEvents);
 
   return {
     match_id:          sid,
@@ -158,7 +162,8 @@ function confirmImport(matchId, playerSlot) {
     result:            row.result,
     grade:             row.overall_grade,
     keyItemsAvailable,
-    events_count:      matchEvents.length,
+    events_count:      allEvents.length,
+    deathStats:        killDeath.deathStats,
   };
 }
 

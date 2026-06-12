@@ -138,7 +138,8 @@ Events are accumulated in-memory by `server/eventLogger.js` and flushed to `matc
 
 | type | trigger | severity | source |
 |------|---------|----------|--------|
-| `hero_death` | `hero.alive` true → false | `critical` \| `danger` | GSI only |
+| `hero_kill`  | kill appears in `kills_log` | `success` | OpenDota import only |
+| `hero_death` | `hero.alive` true → false | `critical` \| `danger` | GSI only; `danger` (fixed) for OpenDota import |
 | `hero_respawn` | `hero.alive` false → true | `info` | GSI only |
 | `key_item_completed` | key route item newly appears | `info` | GSI + OpenDota import |
 | `key_item_near_completion` | gold gap < 600 to next key item | `warning` | GSI only |
@@ -148,6 +149,8 @@ Events are accumulated in-memory by `server/eventLogger.js` and flushed to `matc
 | `low_farm_window` | GPM dropped ≥15% in 3 min with no K/A | `warning` | GSI only |
 | `game_end` | `map.game_state` = `DOTA_GAMERULES_STATE_POST_GAME` or match end | `success` \| `danger` \| `info` | GSI + OpenDota import |
 | `item_purchased` | each `purchase_log` entry | `info` | OpenDota import only |
+| `hero_kill`  | entry in `kills_log` of selected player | `success` | OpenDota import only |
+| `hero_death` (import) | entry in another player's `kills_log` matching selected hero | `danger` (fixed) | OpenDota import only |
 
 **OpenDota import event snapshots** are minimal — only `{ item, source: 'opendota_import', isConsumable }` for `item_purchased`; `{ item, source }` for `key_item_completed` / `power_spike_started`; `{ source }` for `game_end`. The full GSI death snapshot fields (`goldBeforeDeathPenalty`, `itemsAtDeath`, etc.) are absent and the frontend renders them defensively (missing fields silently skipped).
 
@@ -300,15 +303,15 @@ server/tests/
   matchImporter.test.js           39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
   openDotaRaw.test.js             47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
   importPreview.test.js           53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
-  importConfirm.test.js           69 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events)
+  importConfirm.test.js           98 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events + deathStats + kill/death events)
   openDotaKeyItemAnalyzer.test.js 45 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases)
-  openDotaEventBuilder.test.js         74 assertions — isConsumable, buildEventsFromOpenDota (all cases, cross-validation)
+  openDotaEventBuilder.test.js        110 assertions — isConsumable, buildEventsFromOpenDota, buildKillDeathEvents (all cases, cross-validation)
   openDotaKillDeathExtractor.test.js   60 assertions — heroDisplayNameFromInternal, extractKillDeath (all cases)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 537 assertions must pass before merging any change.
+All 602 assertions must pass before merging any change.
 
 ---
 
@@ -621,9 +624,9 @@ dota-ai-coach/
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
-│       ├── importConfirm.test.js          ← 69 assertions (normalizeForMatch, confirmImport + events)
+│       ├── importConfirm.test.js          ← 98 assertions (normalizeForMatch, confirmImport + events + deathStats + kill/death)
 │       ├── openDotaKeyItemAnalyzer.test.js ← 45 assertions (buildPurchaseMap, analyzeKeyItemTimings)
-│       ├── openDotaEventBuilder.test.js         ← 74 assertions (isConsumable, buildEventsFromOpenDota)
+│       ├── openDotaEventBuilder.test.js         ← 110 assertions (isConsumable, buildEventsFromOpenDota, buildKillDeathEvents)
 │       ├── openDotaKillDeathExtractor.test.js   ← 60 assertions (heroDisplayNameFromInternal, extractKillDeath)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
