@@ -66,6 +66,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/importConfirmService.js` | `confirmImport(matchId, playerSlot)` — writes `matches` row + key item timings + match events |
 | `server/openDotaKeyItemAnalyzer.js` | Pure: `analyzeKeyItemTimings(matchId, player, profile)` — extracts timings from `purchase_log` |
 | `server/openDotaEventBuilder.js` | Pure: `buildEventsFromOpenDota(player, profile, matchInfo)` — builds `match_events` array from `purchase_log` |
+| `server/openDotaKillDeathExtractor.js` | Pure: `extractKillDeath(players, selectedPlayerSlot)` — extracts kill/death timeline from OpenDota `kills_log` |
 
 ---
 
@@ -301,12 +302,13 @@ server/tests/
   importPreview.test.js           53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
   importConfirm.test.js           69 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events)
   openDotaKeyItemAnalyzer.test.js 45 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases)
-  openDotaEventBuilder.test.js    74 assertions — isConsumable, buildEventsFromOpenDota (all cases, cross-validation)
+  openDotaEventBuilder.test.js         74 assertions — isConsumable, buildEventsFromOpenDota (all cases, cross-validation)
+  openDotaKillDeathExtractor.test.js   60 assertions — heroDisplayNameFromInternal, extractKillDeath (all cases)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 477 assertions must pass before merging any change.
+All 537 assertions must pass before merging any change.
 
 ---
 
@@ -600,6 +602,7 @@ dota-ai-coach/
 │   ├── matchImporter.js               ← Import Match: OpenDota fetch + event reconstruction
 │   ├── openDotaRawService.js          ← Raw cache layer: fetch → raw_opendota_matches table
 │   ├── openDotaEventBuilder.js        ← Pure: buildEventsFromOpenDota() → match_events[]
+│   ├── openDotaKillDeathExtractor.js  ← Pure: extractKillDeath(players, slot) → {kills, deaths, deathStats}
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -620,7 +623,8 @@ dota-ai-coach/
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
 │       ├── importConfirm.test.js          ← 69 assertions (normalizeForMatch, confirmImport + events)
 │       ├── openDotaKeyItemAnalyzer.test.js ← 45 assertions (buildPurchaseMap, analyzeKeyItemTimings)
-│       ├── openDotaEventBuilder.test.js   ← 74 assertions (isConsumable, buildEventsFromOpenDota)
+│       ├── openDotaEventBuilder.test.js         ← 74 assertions (isConsumable, buildEventsFromOpenDota)
+│       ├── openDotaKillDeathExtractor.test.js   ← 60 assertions (heroDisplayNameFromInternal, extractKillDeath)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)
