@@ -58,11 +58,35 @@ function StatCell({ label, value, color }) {
   );
 }
 
+// ── Event timeline helpers ─────────────────────────────────────────────────
+
+// Group consecutive consumable item_purchased events into collapsible clusters.
+// Non-consumable and non-item_purchased events are passed through as-is.
+// Returns a mixed array of event objects and group objects { isGroup, events, key }.
+function groupEventsForDisplay(evts) {
+  const result = [];
+  let group = null;
+  for (const e of evts) {
+    if (e.type === 'item_purchased' && e.snapshot?.isConsumable) {
+      if (!group) {
+        group = { isGroup: true, events: [], key: `cg_${result.length}` };
+        result.push(group);
+      }
+      group.events.push(e);
+    } else {
+      group = null;
+      result.push(e);
+    }
+  }
+  return result;
+}
+
 // ── Match detail view ──────────────────────────────────────────────────────
 
 function MatchDetail({ matchId, onBack }) {
-  const [detail, setDetail] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [detail, setDetail]           = useState(null);
+  const [loading, setLoading]         = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState(new Set());
 
   useEffect(() => {
     fetch(`/api/history/matches/${matchId}`)
@@ -76,6 +100,55 @@ function MatchDetail({ matchId, onBack }) {
   if (!detail) return <div style={{ color: '#f85149', padding: '40px', textAlign: 'center' }}>加载失败</div>;
 
   const { match: m, events, keyItemTimings } = detail;
+
+  // Render a single event row — shared by grouped and ungrouped paths.
+  // Snapshot fields are optional: only hero_death has full snapshots; OpenDota
+  // events carry a minimal { item, source, isConsumable } shape. Missing fields
+  // are silently skipped rather than rendered as undefined.
+  function renderEventRow(e) {
+    const severityColor = {
+      critical: '#f85149', danger: '#f85149',
+      warning: '#e3b341', success: '#56d364', info: '#79c0ff',
+    }[e.severity] || '#8b949e';
+    const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
+    let deathItems = [];
+    if (snap) {
+      if (Array.isArray(snap.itemsAtDeath) && snap.itemsAtDeath.length > 0) {
+        deathItems = snap.itemsAtDeath.filter((n) => n !== 'item_tpscroll');
+      } else if (snap.inventoryAtDeath) {
+        deathItems = Object.values(snap.inventoryAtDeath).filter((n) => n && n !== 'item_tpscroll');
+      }
+    }
+    return (
+      <div key={e.id} style={{ padding: '5px 0', borderBottom: '1px solid #30363d22' }}>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+          <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+            {formatTime(e.game_time)}
+          </span>
+          <span style={{
+            fontSize: '10px', fontWeight: '600', color: severityColor,
+            background: severityColor + '22', padding: '1px 6px', borderRadius: '4px',
+            flexShrink: 0, alignSelf: 'center',
+          }}>
+            {e.type.replace(/_/g, ' ')}
+          </span>
+          <span style={{ fontSize: '12px', color: '#c9d1d9', lineHeight: '1.4' }}>{e.message}</span>
+        </div>
+        {snap && (
+          <div style={{ marginLeft: '46px', marginTop: '3px', fontSize: '11px', color: '#8b949e66', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            {snap.goldBeforeDeathPenalty != null && (
+              <span>死前金币 <span style={{ color: '#e3b341' }}>{snap.goldBeforeDeathPenalty}g</span></span>
+            )}
+            {deathItems.length > 0 && (
+              <span>道具：<span style={{ color: '#8b949e' }}>{deathItems.map(itemDisplayName).join('、')}</span></span>
+            )}
+            {snap.hadTpAtDeath === false && <span style={{ color: '#e3b341' }}>无TP</span>}
+            {snap.wasNearKeyItem && <span style={{ color: '#f85149' }}>差钱 &lt;600</span>}
+          </div>
+        )}
+      </div>
+    );
+  }
   const resultCfg = RESULT_CONFIG[m.result] || { color: '#8b949e', bg: '#161b22' };
   const gradeColor = GRADE_COLORS[m.overall_grade] || '#8b949e';
 
@@ -211,49 +284,36 @@ function MatchDetail({ matchId, onBack }) {
             事件时间线 ({events.length} 条)
           </div>
           <div style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            {events.map((e) => {
-              const severityColor = {
-                critical: '#f85149', danger: '#f85149',
-                warning: '#e3b341', success: '#56d364', info: '#79c0ff',
-              }[e.severity] || '#8b949e';
-              const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
-              let deathItems = [];
-              if (snap) {
-                if (Array.isArray(snap.itemsAtDeath) && snap.itemsAtDeath.length > 0) {
-                  deathItems = snap.itemsAtDeath.filter((n) => n !== 'item_tpscroll');
-                } else if (snap.inventoryAtDeath) {
-                  deathItems = Object.values(snap.inventoryAtDeath).filter((n) => n && n !== 'item_tpscroll');
-                }
-              }
-              return (
-                <div key={e.id} style={{ padding: '5px 0', borderBottom: '1px solid #30363d22' }}>
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
-                    <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                      {formatTime(e.game_time)}
-                    </span>
-                    <span style={{
-                      fontSize: '10px', fontWeight: '600', color: severityColor,
-                      background: severityColor + '22', padding: '1px 6px', borderRadius: '4px',
-                      flexShrink: 0, alignSelf: 'center',
-                    }}>
-                      {e.type.replace(/_/g, ' ')}
-                    </span>
-                    <span style={{ fontSize: '12px', color: '#c9d1d9', lineHeight: '1.4' }}>{e.message}</span>
-                  </div>
-                  {snap && (
-                    <div style={{ marginLeft: '46px', marginTop: '3px', fontSize: '11px', color: '#8b949e66', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      {snap.goldBeforeDeathPenalty != null && (
-                        <span>死前金币 <span style={{ color: '#e3b341' }}>{snap.goldBeforeDeathPenalty}g</span></span>
-                      )}
-                      {deathItems.length > 0 && (
-                        <span>道具：<span style={{ color: '#8b949e' }}>{deathItems.map(itemDisplayName).join('、')}</span></span>
-                      )}
-                      {snap.hadTpAtDeath === false && <span style={{ color: '#e3b341' }}>无TP</span>}
-                      {snap.wasNearKeyItem && <span style={{ color: '#f85149' }}>差钱 &lt;600</span>}
+            {groupEventsForDisplay(events).map((item) => {
+              // Collapsed consumable group
+              if (item.isGroup) {
+                const isExpanded = expandedGroups.has(item.key);
+                const first = item.events[0];
+                const last  = item.events[item.events.length - 1];
+                return (
+                  <div key={item.key}>
+                    <div
+                      onClick={() => setExpandedGroups((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(item.key)) next.delete(item.key); else next.add(item.key);
+                        return next;
+                      })}
+                      style={{ padding: '5px 0', borderBottom: '1px solid #30363d22', display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
+                    >
+                      <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right' }}>
+                        {formatTime(first.game_time)}
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#8b949e88' }}>
+                        {isExpanded ? '▾' : '▸'} 消耗品购买 × {item.events.length} 条
+                        {item.events.length > 1 && ` (${formatTime(first.game_time)}–${formatTime(last.game_time)})`}
+                      </span>
                     </div>
-                  )}
-                </div>
-              );
+                    {isExpanded && item.events.map((e) => renderEventRow(e))}
+                  </div>
+                );
+              }
+              // Regular event row
+              return renderEventRow(item);
             })}
           </div>
         </div>

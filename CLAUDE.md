@@ -63,8 +63,9 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaRawService.js` | Raw OpenDota cache: fetch → store full response in `raw_opendota_matches` |
 | `server/importPreviewService.js` | Pure: `buildPreview(rawMatchData)` → structured 10-player preview object |
 | `server/data/dotaHeroNames.js` | `hero_id` → display name + `hero_id` → internal name (`npc_dota_hero_xxx`) maps |
-| `server/importConfirmService.js` | `confirmImport(matchId, playerSlot)` — writes `matches` row + key item timings |
+| `server/importConfirmService.js` | `confirmImport(matchId, playerSlot)` — writes `matches` row + key item timings + match events |
 | `server/openDotaKeyItemAnalyzer.js` | Pure: `analyzeKeyItemTimings(matchId, player, profile)` — extracts timings from `purchase_log` |
+| `server/openDotaEventBuilder.js` | Pure: `buildEventsFromOpenDota(player, profile, matchInfo)` — builds `match_events` array from `purchase_log` |
 
 ---
 
@@ -134,17 +135,20 @@ Events are accumulated in-memory by `server/eventLogger.js` and flushed to `matc
 
 ### Event types
 
-| type | trigger | severity |
-|------|---------|----------|
-| `hero_death` | `hero.alive` true → false | `critical` \| `danger` |
-| `hero_respawn` | `hero.alive` false → true | `info` |
-| `key_item_completed` | key route item newly appears | `info` |
-| `key_item_near_completion` | gold gap < 600 to next key item | `warning` |
-| `power_spike_started` | powerSpikeItem completed | `info` |
-| `power_spike_unused` | spike item completed 3 min with no K/A growth | `warning` |
-| `no_tp_warning` | TP missing > 60 s (after 5 min) | `warning` |
-| `low_farm_window` | GPM dropped ≥15% in 3 min with no K/A | `warning` |
-| `game_end` | `map.game_state` = `DOTA_GAMERULES_STATE_POST_GAME` | `success` \| `danger` |
+| type | trigger | severity | source |
+|------|---------|----------|--------|
+| `hero_death` | `hero.alive` true → false | `critical` \| `danger` | GSI only |
+| `hero_respawn` | `hero.alive` false → true | `info` | GSI only |
+| `key_item_completed` | key route item newly appears | `info` | GSI + OpenDota import |
+| `key_item_near_completion` | gold gap < 600 to next key item | `warning` | GSI only |
+| `power_spike_started` | powerSpikeItem completed | `info` | GSI + OpenDota import |
+| `power_spike_unused` | spike item completed 3 min with no K/A growth | `warning` | GSI only |
+| `no_tp_warning` | TP missing > 60 s (after 5 min) | `warning` | GSI only |
+| `low_farm_window` | GPM dropped ≥15% in 3 min with no K/A | `warning` | GSI only |
+| `game_end` | `map.game_state` = `DOTA_GAMERULES_STATE_POST_GAME` or match end | `success` \| `danger` \| `info` | GSI + OpenDota import |
+| `item_purchased` | each `purchase_log` entry | `info` | OpenDota import only |
+
+**OpenDota import event snapshots** are minimal — only `{ item, source: 'opendota_import', isConsumable }` for `item_purchased`; `{ item, source }` for `key_item_completed` / `power_spike_started`; `{ source }` for `game_end`. The full GSI death snapshot fields (`goldBeforeDeathPenalty`, `itemsAtDeath`, etc.) are absent and the frontend renders them defensively (missing fields silently skipped).
 
 ### `hero_death` snapshot fields
 
@@ -289,19 +293,20 @@ The server uses `require()` / `module.exports` throughout. VS Code shows a 80001
 
 ```
 server/tests/
-  suggestKeyItem.test.js    18 assertions — pure function, no I/O
-  matchHistory.test.js      79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
-  eventLogger.test.js       53 assertions — death snapshot, item fields, normalizeItems
-  matchImporter.test.js     39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
-  openDotaRaw.test.js       47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
-  importPreview.test.js     53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
-  importConfirm.test.js        56 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB)
-  openDotaKeyItemAnalyzer.test.js  45 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases)
+  suggestKeyItem.test.js          18 assertions — pure function, no I/O
+  matchHistory.test.js            79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
+  eventLogger.test.js             53 assertions — death snapshot, item fields, normalizeItems
+  matchImporter.test.js           39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
+  openDotaRaw.test.js             47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
+  importPreview.test.js           53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
+  importConfirm.test.js           69 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events)
+  openDotaKeyItemAnalyzer.test.js 45 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases)
+  openDotaEventBuilder.test.js    74 assertions — isConsumable, buildEventsFromOpenDota (all cases, cross-validation)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 390 assertions must pass before merging any change.
+All 477 assertions must pass before merging any change.
 
 ---
 
@@ -406,15 +411,37 @@ Shows all 10 players from a match before the user selects which slot is theirs. 
 
 ## Import Confirm feature
 
-Writes a selected player's match data from the OpenDota raw cache into the `matches` table.
-No events or key_item_timings are generated at this stage.
+Writes a selected player's match data from the OpenDota raw cache into the `matches` table, generates `key_item_timings` (when `purchase_log` is available), and builds the full `match_events` timeline.
 
 ### Flow
 1. User sees the 10-player preview in `MatchImportPreview.jsx`.
 2. Clicks **选择** on their row → `POST /history/import/confirm { matchId, playerSlot }`.
 3. Server calls `confirmImport(matchId, playerSlot)` from `importConfirmService.js`.
 4. Service reads raw cache via `getCached(matchId)`, normalises the player into a `matches` row, calls `saveMatch()`.
-5. UI shows a green success banner; the match appears immediately in History.
+5. Calls `analyzeKeyItemTimings()` and `saveKeyItemTimings()` when `purchase_log` is available.
+6. Calls `buildEventsFromOpenDota()` (from `openDotaEventBuilder.js`) and `saveMatchEvents()` — always.
+7. UI shows a green success banner; the match appears immediately in History with a full event timeline.
+
+### Events generated by `buildEventsFromOpenDota`
+| Event type | Condition |
+|------------|-----------|
+| `item_purchased` | One per `purchase_log` entry (all items, including duplicates/restocks) |
+| `key_item_completed` | `purchase_log` entry matches `profile.keyItems` (same logic as `analyzeKeyItemTimings`) |
+| `power_spike_started` | `purchase_log` entry matches `profile.powerSpikeItems` |
+| `game_end` | Always; severity derived from `radiantWin` + `team`; severity `info` when `radiantWin` is null |
+
+When `purchase_log` is absent or empty, only `game_end` is generated — "no guessing" principle.
+When hero has no supported profile, `key_item_completed` and `power_spike_started` are skipped.
+
+### Consumable folding in MatchHistory.jsx
+Consecutive `item_purchased` events where `snapshot.isConsumable === true` are grouped into a collapsible row:
+- Collapsed by default, showing `▸ 消耗品购买 × N 条`.
+- Click toggles expansion. Non-consumable purchases and all other event types remain as individual rows.
+- Groups break when a non-consumable event appears between two consumable purchases.
+- State is component-local (`useState(new Set())`), not persisted.
+
+### Consumable item set (server: `openDotaEventBuilder.js`, flag in snapshot)
+`item_tango`, `item_clarity`, `item_flask`, `item_enchanted_mango`, `item_faerie_fire`, `item_tpscroll`, `item_smoke_of_deceit`, `item_infused_raindrop`, `item_ward_observer`, `item_ward_sentry`, `item_ward_dispenser`, `item_dust`.
 
 ### `match_id` scheme for imported rows
 `{dotaMatchId}_od{playerSlot}` — e.g., `8838859325_od2`. Allows multiple player slots from the same match without conflicting on the `match_id UNIQUE` index. `import_match_id` stores the original Dota match ID.
@@ -427,6 +454,9 @@ No events or key_item_timings are generated at this stage.
 After writing the `matches` row, `confirmImport` calls `analyzeKeyItemTimings` (from `openDotaKeyItemAnalyzer.js`):
 - If the hero has a supported profile AND `purchase_log` is non-empty → writes `key_item_timings` rows
 - If `purchase_log` is absent or empty → skips (no guessing); History shows a "关键装备数据不可用" warning banner
+
+### match_events
+`buildEventsFromOpenDota` (from `openDotaEventBuilder.js`) is always called and its output written via `saveMatchEvents`. The function returns at minimum a `game_end` event. See "Events generated" table above.
 
 ### `power_spike_used` in OpenDota imports
 `null` for completed spike items (whether the spike was "used" cannot be determined from the basic API).
@@ -569,6 +599,7 @@ dota-ai-coach/
 │   ├── suggestKeyItem.js              ← pure function: next key item inference
 │   ├── matchImporter.js               ← Import Match: OpenDota fetch + event reconstruction
 │   ├── openDotaRawService.js          ← Raw cache layer: fetch → raw_opendota_matches table
+│   ├── openDotaEventBuilder.js        ← Pure: buildEventsFromOpenDota() → match_events[]
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -587,8 +618,9 @@ dota-ai-coach/
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
-│       ├── importConfirm.test.js          ← 56 assertions (normalizeForMatch, confirmImport)
+│       ├── importConfirm.test.js          ← 69 assertions (normalizeForMatch, confirmImport + events)
 │       ├── openDotaKeyItemAnalyzer.test.js ← 45 assertions (buildPurchaseMap, analyzeKeyItemTimings)
+│       ├── openDotaEventBuilder.test.js   ← 74 assertions (isConsumable, buildEventsFromOpenDota)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

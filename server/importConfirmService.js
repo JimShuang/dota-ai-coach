@@ -1,18 +1,18 @@
 'use strict';
 
-// Confirms an OpenDota match import: normalises a selected player's data
-// into a matches-table row, generates key_item_timings when purchase_log is
-// available, and persists both.
+// Confirms an OpenDota match import: normalises a selected player's data into a
+// matches row, generates key_item_timings when purchase_log is available, builds
+// the event timeline, and persists all three.
 //
-// Does NOT generate match_events.
 // Does NOT hit the network — raw data must already be in raw_opendota_matches.
 
 const { getCached } = require('./openDotaRawService');
-const { matchExists, saveMatch, saveKeyItemTimings } = require('./db');
+const { matchExists, saveMatch, saveKeyItemTimings, saveMatchEvents } = require('./db');
 const { getProfileByDotaName } = require('./data/offlaneHeroProfiles');
 const { getHeroInternalName } = require('./data/dotaHeroNames');
 const { computeGrade, computeOneThingToImprove } = require('./matchImporter');
 const { analyzeKeyItemTimings } = require('./openDotaKeyItemAnalyzer');
+const { buildEventsFromOpenDota } = require('./openDotaEventBuilder');
 
 // ── Synthetic match_id ─────────────────────────────────────────────────────
 
@@ -140,6 +140,16 @@ function confirmImport(matchId, playerSlot) {
     }
   }
 
+  // Build and persist event timeline from purchase_log
+  const isRadiant  = Number(playerSlot) < 128;
+  const matchInfo  = {
+    duration:   cached.raw_json.duration    || 0,
+    radiantWin: cached.raw_json.radiant_win ?? null,
+    team:       isRadiant ? 'radiant' : 'dire',
+  };
+  const matchEvents = buildEventsFromOpenDota(player, profile, matchInfo);
+  saveMatchEvents(sid, matchEvents);
+
   return {
     match_id:          sid,
     import_match_id:   String(matchId),
@@ -148,6 +158,7 @@ function confirmImport(matchId, playerSlot) {
     result:            row.result,
     grade:             row.overall_grade,
     keyItemsAvailable,
+    events_count:      matchEvents.length,
   };
 }
 

@@ -5,7 +5,7 @@
 
 const { normalizeForMatch, syntheticMatchId } = require('../importConfirmService');
 const { getHeroInternalName } = require('../data/dotaHeroNames');
-const { saveRawOpendotaMatch, getRawOpendotaMatch } = require('../db');
+const { saveRawOpendotaMatch, getRawOpendotaMatch, getMatchById } = require('../db');
 const service = require('../openDotaRawService');
 
 let passed = 0;
@@ -179,6 +179,34 @@ assert(result.import_match_id === CI_MATCH_ID,          'confirmImport returns i
 assert(result.player_slot     === 2,                    'confirmImport returns player_slot');
 assert(typeof result.result   === 'string',             'confirmImport returns result');
 assert(typeof result.grade    === 'string',             'confirmImport returns grade');
+assert(typeof result.events_count === 'number',         'confirmImport returns events_count');
+assert(result.events_count >= 1,                        'at least 1 event (game_end)');
+
+// Verify match_events were written to DB
+const synId   = `${CI_MATCH_ID}_od2`;
+const detail  = getMatchById(synId);
+assert(detail !== null,                        'getMatchById returns result after confirmImport');
+assert(Array.isArray(detail.events),           'events array present in detail');
+assert(detail.events.length > 0,              'events array non-empty');
+assert(detail.events.length === result.events_count, 'DB event count matches returned events_count');
+
+// All events share the synthetic match_id
+assert(detail.events.every(e => e.match_id === synId), 'all events have synthetic match_id');
+
+// game_end always present
+const gameEnd = detail.events.find(e => e.type === 'game_end');
+assert(gameEnd != null, 'game_end event present in DB');
+assert(gameEnd.severity === 'success', 'Centaur radiant slot + radiant_win=true → success');
+
+// item_purchased for vanguard (purchase_log has { time: 540, key: 'vanguard' })
+const purchasedEvent = detail.events.find(e => e.type === 'item_purchased');
+assert(purchasedEvent != null, 'item_purchased event present in DB');
+assert(purchasedEvent.snapshot?.item === 'item_vanguard', 'vanguard purchase snapshot.item correct');
+assert(purchasedEvent.snapshot?.source === 'opendota_import', 'purchase snapshot.source = opendota_import');
+
+// key_item_completed for vanguard (it is the first key item in centaur profile)
+const keyItemEvent = detail.events.find(e => e.type === 'key_item_completed');
+assert(keyItemEvent != null, 'key_item_completed event present in DB');
 
 // Duplicate import → DUPLICATE error
 let dupErr = null;
