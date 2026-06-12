@@ -1,6 +1,7 @@
 // Run: node server/tests/openDotaKeyItemAnalyzer.test.js
 
-const { analyzeKeyItemTimings, buildPurchaseMap } = require('../openDotaKeyItemAnalyzer');
+const { analyzeKeyItemTimings, buildPurchaseMap, countPreKeyItemDeaths } = require('../openDotaKeyItemAnalyzer');
+const { computeKeyItemTimings } = require('../matchHistory');
 
 let passed = 0;
 let failed = 0;
@@ -150,6 +151,159 @@ assert('completed'                in anyRow, 'row has completed');
 assert('completed_time'           in anyRow, 'row has completed_time');
 assert('deaths_before_completion' in anyRow, 'row has deaths_before_completion');
 assert('power_spike_used'         in anyRow, 'row has power_spike_used');
+
+// ── analyzeKeyItemTimings: with death times ───────────────────────────────
+
+console.log('\n── analyzeKeyItemTimings: with death times ───────────────────────────');
+
+// Four deaths; vanguard at 540, blink at 900, pipe + crimson_guard not purchased
+const DEATH_TIMES = [300, 600, 1200, 2000];
+
+const rDC = analyzeKeyItemTimings(
+  'test_dc1',
+  { purchase_log: PURCHASE_LOG_CENTAUR },
+  CENTAUR_PROFILE,
+  DEATH_TIMES
+);
+
+assert(rDC.available === true, 'with deathTimes → available = true');
+
+const dcVanguard = rDC.timings.find((t) => t.item_name === 'item_vanguard');
+assert(dcVanguard.deaths_before_completion === 1,
+  'vanguard (t=540): 1 death before (300 < 540)');
+
+const dcBlink = rDC.timings.find((t) => t.item_name === 'item_blink');
+assert(dcBlink.deaths_before_completion === 2,
+  'blink (t=900): 2 deaths before (300 < 900, 600 < 900)');
+
+const dcPipe = rDC.timings.find((t) => t.item_name === 'item_pipe');
+assert(dcPipe.deaths_before_completion === 4,
+  'pipe (not completed): all 4 reconstructed deaths');
+
+const dcCrimson = rDC.timings.find((t) => t.item_name === 'item_crimson_guard');
+assert(dcCrimson.deaths_before_completion === 4,
+  'crimson_guard (not completed): all 4 reconstructed deaths');
+
+// Backward-compat: existing calls without deathTimes still produce 0
+assert(rC.timings[0].deaths_before_completion === 0,
+  'existing call without deathTimes → deaths_before_completion = 0 (backward-compat)');
+
+// All key items completed — each should count exactly deaths before its completion time
+const PURCHASE_LOG_FULL = [
+  { time: 540,  key: 'vanguard' },
+  { time: 900,  key: 'blink' },
+  { time: 1800, key: 'pipe' },
+  { time: 2400, key: 'crimson_guard' },
+];
+const rFull = analyzeKeyItemTimings(
+  'test_dc2',
+  { purchase_log: PURCHASE_LOG_FULL },
+  CENTAUR_PROFILE,
+  [300, 600, 1200, 2000]
+);
+const fcVanguard = rFull.timings.find((t) => t.item_name === 'item_vanguard');
+const fcBlink    = rFull.timings.find((t) => t.item_name === 'item_blink');
+const fcPipe     = rFull.timings.find((t) => t.item_name === 'item_pipe');
+const fcCrimson  = rFull.timings.find((t) => t.item_name === 'item_crimson_guard');
+
+assert(fcVanguard.deaths_before_completion === 1,
+  'all-completed: vanguard 1 death before t=540');
+assert(fcBlink.deaths_before_completion    === 2,
+  'all-completed: blink 2 deaths before t=900');
+assert(fcPipe.deaths_before_completion     === 3,
+  'all-completed: pipe 3 deaths before t=1800 (300,600,1200 < 1800)');
+assert(fcCrimson.deaths_before_completion  === 4,
+  'all-completed: crimson 4 deaths before t=2400 (all < 2400)');
+
+// Empty deathTimes → 0 for all (not null)
+const rNoDeaths = analyzeKeyItemTimings(
+  'test_dc3',
+  { purchase_log: PURCHASE_LOG_CENTAUR },
+  CENTAUR_PROFILE,
+  []
+);
+assert(rNoDeaths.timings.every((t) => t.deaths_before_completion === 0),
+  'empty deathTimes → all deaths_before_completion = 0');
+
+// ── countPreKeyItemDeaths ─────────────────────────────────────────────────
+
+console.log('\n── countPreKeyItemDeaths ─────────────────────────────────────────────');
+
+const purchaseMapDC = buildPurchaseMap(PURCHASE_LOG_CENTAUR); // vanguard=540, blink=900
+
+// All 4 deaths are pre-key-item: pipe + crimson_guard never purchased
+// 300: vanguard at 540 > 300 → true
+// 600: vanguard done, blink at 900 > 600 → true
+// 1200: vanguard + blink done, pipe null → true
+// 2000: same → true
+assert(countPreKeyItemDeaths([300, 600, 1200, 2000], purchaseMapDC, CENTAUR_PROFILE) === 4,
+  'all 4 deaths pre-key-item (pipe+crimson never completed)');
+
+// Only early death is pre-key-item when all items eventually complete
+const fullMap = buildPurchaseMap(PURCHASE_LOG_FULL); // all items bought by t=2400
+// 300: vanguard at 540 > 300 → true (1 pre-key-item)
+// 3000: all items done before 3000 → false
+assert(countPreKeyItemDeaths([300, 3000], fullMap, CENTAUR_PROFILE) === 1,
+  'death at 300 is pre-key-item; death at 3000 is after all items completed');
+
+// Zero deaths at all
+assert(countPreKeyItemDeaths([], purchaseMapDC, CENTAUR_PROFILE) === 0,
+  'empty deathTimes → 0');
+
+// Null/no-arg guard
+assert(countPreKeyItemDeaths(null, purchaseMapDC, CENTAUR_PROFILE) === 0,
+  'null deathTimes → 0');
+
+// No profile
+assert(countPreKeyItemDeaths([300, 600], purchaseMapDC, null) === 0,
+  'null profile → 0');
+
+// Empty keyItems
+assert(countPreKeyItemDeaths([300, 600], purchaseMapDC, { keyItems: [] }) === 0,
+  'empty keyItems → 0');
+
+// Death exactly at completion time: strict < so it does NOT count as pre-key-item
+const exactMap = buildPurchaseMap([{ time: 300, key: 'vanguard' }]);
+// Item bought at exactly t=300; profile has blink,pipe,crimson not in map (→ pre-key-item)
+// But death is at t=300: vanguard at 300, not > 300 → skip; blink null → true → pre
+assert(countPreKeyItemDeaths([300], exactMap, CENTAUR_PROFILE) === 1,
+  'death at t=300 with vanguard at t=300: blink still absent → pre-key-item (true)');
+
+// ── Cross-validation: analyzeKeyItemTimings vs computeKeyItemTimings (GSI) ──
+
+console.log('\n── Cross-validation: analyzeKeyItemTimings vs computeKeyItemTimings ───');
+
+const CENTAUR_PROFILE_FULL = {
+  keyItems:        ['item_vanguard', 'item_blink', 'item_pipe', 'item_crimson_guard'],
+  powerSpikeItems: ['item_blink'],
+};
+
+// Build GSI-style event array equivalent to PURCHASE_LOG_CENTAUR + DEATH_TIMES
+const gsiEvents = [
+  { type: 'hero_death',         game_time: 300  },
+  { type: 'key_item_completed', game_time: 540,  snapshot: { item: 'item_vanguard' } },
+  { type: 'hero_death',         game_time: 600  },
+  { type: 'key_item_completed', game_time: 900,  snapshot: { item: 'item_blink'   } },
+  { type: 'hero_death',         game_time: 1200 },
+  { type: 'hero_death',         game_time: 2000 },
+];
+
+const gsiTimings = computeKeyItemTimings('crossval', CENTAUR_PROFILE_FULL, gsiEvents);
+const odTimings  = analyzeKeyItemTimings(
+  'crossval',
+  { purchase_log: PURCHASE_LOG_CENTAUR },
+  CENTAUR_PROFILE,
+  DEATH_TIMES
+).timings;
+
+for (const item of CENTAUR_PROFILE_FULL.keyItems) {
+  const gsi = gsiTimings.find((t) => t.item_name === item);
+  const od  = odTimings.find((t) => t.item_name === item);
+  assert(
+    od.deaths_before_completion === gsi.deaths_before_completion,
+    `${item}: OD deaths_before_completion=${od.deaths_before_completion} matches GSI=${gsi.deaths_before_completion}`
+  );
+}
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

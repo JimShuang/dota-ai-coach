@@ -11,7 +11,7 @@ const { matchExists, saveMatch, saveKeyItemTimings, saveMatchEvents } = require(
 const { getProfileByDotaName } = require('./data/offlaneHeroProfiles');
 const { getHeroInternalName } = require('./data/dotaHeroNames');
 const { computeGrade, computeOneThingToImprove } = require('./matchImporter');
-const { analyzeKeyItemTimings } = require('./openDotaKeyItemAnalyzer');
+const { analyzeKeyItemTimings, buildPurchaseMap, countPreKeyItemDeaths } = require('./openDotaKeyItemAnalyzer');
 const { buildEventsFromOpenDota, buildKillDeathEvents } = require('./openDotaEventBuilder');
 const { extractKillDeath } = require('./openDotaKillDeathExtractor');
 
@@ -124,17 +124,31 @@ function confirmImport(matchId, playerSlot) {
     );
   }
 
-  const row = normalizeForMatch(matchId, Number(playerSlot), cached.raw_json);
-  saveMatch(row);
-
-  // Generate key item timings if a supported hero profile exists
+  // Resolve player + profile early — needed to compute pre_key_item_deaths before saveMatch
   const player = cached.raw_json.players.find((p) => p.player_slot === Number(playerSlot));
   const heroInternalName = getHeroInternalName(player?.hero_id);
   const profile = heroInternalName ? getProfileByDotaName(heroInternalName) : null;
 
+  // Extract reconstructed death times (lower bound — tower/creep kills have no timestamp)
+  const killDeath  = extractKillDeath(cached.raw_json.players, Number(playerSlot));
+  const deathTimes = killDeath.deaths.map((d) => d.time);
+
+  // Compute pre_key_item_deaths — requires both purchase_log and reconstructed deaths
+  let pre_key_item_deaths = 0;
+  const hasPurchaseLog = Array.isArray(player?.purchase_log) && player.purchase_log.length > 0;
+  if (profile && deathTimes.length > 0 && hasPurchaseLog) {
+    const purchaseMap = buildPurchaseMap(player.purchase_log);
+    pre_key_item_deaths = countPreKeyItemDeaths(deathTimes, purchaseMap, profile);
+  }
+
+  const row = normalizeForMatch(matchId, Number(playerSlot), cached.raw_json);
+  row.pre_key_item_deaths = pre_key_item_deaths;
+  saveMatch(row);
+
+  // Generate key item timings — pass deathTimes so deaths_before_completion is backfilled
   let keyItemsAvailable = false;
   if (profile) {
-    const timingResult = analyzeKeyItemTimings(sid, player, profile);
+    const timingResult = analyzeKeyItemTimings(sid, player, profile, deathTimes);
     keyItemsAvailable = timingResult.available;
     if (timingResult.available && timingResult.timings.length > 0) {
       saveKeyItemTimings(sid, timingResult.timings);
@@ -149,21 +163,21 @@ function confirmImport(matchId, playerSlot) {
     team:       isRadiant ? 'radiant' : 'dire',
   };
   const purchaseEvents  = buildEventsFromOpenDota(player, profile, matchInfo);
-  const killDeath       = extractKillDeath(cached.raw_json.players, Number(playerSlot));
   const kdEvents        = buildKillDeathEvents(killDeath);
   const allEvents       = [...purchaseEvents, ...kdEvents].sort((a, b) => a.game_time - b.game_time);
   saveMatchEvents(sid, allEvents);
 
   return {
-    match_id:          sid,
-    import_match_id:   String(matchId),
-    player_slot:       Number(playerSlot),
-    hero:              row.hero,
-    result:            row.result,
-    grade:             row.overall_grade,
+    match_id:            sid,
+    import_match_id:     String(matchId),
+    player_slot:         Number(playerSlot),
+    hero:                row.hero,
+    result:              row.result,
+    grade:               row.overall_grade,
     keyItemsAvailable,
-    events_count:      allEvents.length,
-    deathStats:        killDeath.deathStats,
+    events_count:        allEvents.length,
+    deathStats:          killDeath.deathStats,
+    pre_key_item_deaths,
   };
 }
 

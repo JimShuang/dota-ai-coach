@@ -303,15 +303,15 @@ server/tests/
   matchImporter.test.js           39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
   openDotaRaw.test.js             47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
   importPreview.test.js           53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
-  importConfirm.test.js           98 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events + deathStats + kill/death events)
-  openDotaKeyItemAnalyzer.test.js 45 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases)
+  importConfirm.test.js          104 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events + deathStats + kill/death events + pre_key_item_deaths + deaths_before_completion)
+  openDotaKeyItemAnalyzer.test.js 67 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases + deathTimes), countPreKeyItemDeaths, GSI cross-validation
   openDotaEventBuilder.test.js        110 assertions — isConsumable, buildEventsFromOpenDota, buildKillDeathEvents (all cases, cross-validation)
   openDotaKillDeathExtractor.test.js   60 assertions — heroDisplayNameFromInternal, extractKillDeath (all cases)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 602 assertions must pass before merging any change.
+All 630 assertions must pass before merging any change.
 
 ---
 
@@ -469,7 +469,12 @@ After writing the `matches` row, `confirmImport` calls `analyzeKeyItemTimings` (
 History detail shows **N/A** for `null`, matching the existing `已转化` / `未转化` logic for GSI matches.
 
 ### `deaths_before_completion` in OpenDota imports
-Always `0` — per-death timestamps are not in the OpenDota basic match API.
+Computed as a **lower bound** from reconstructed death times (see `openDotaKillDeathExtractor`):
+- If the item was **completed**: deaths where `reconstructed_death_time < completed_time` (mirrors `computeKeyItemTimings` in `matchHistory.js` exactly)
+- If the item was **not completed**: count of all reconstructed deaths
+- When no `kills_log` data is available (death times empty): `0` — never `null`
+
+**Precision limit:** tower, creep, and Roshan kills do not appear in any player's `kills_log`, so the reconstructed death count is ≤ `player.deaths`. Both `deaths_before_completion` and `matches.pre_key_item_deaths` for OpenDota imports are therefore lower bounds. This is documented in `openDotaKeyItemAnalyzer.js`.
 
 ### `source` field
 | Value | Where set | Meaning |
@@ -511,7 +516,7 @@ Allows users to import a past Dota 2 match by ID using the OpenDota public API. 
 Not available without replay parsing: `hero_death`, `no_tp_warning`, `low_farm_window`.
 
 ### Analysis
-Grade and `one_thing_to_improve` are computed from KDA, GPM, and key item timing (see `computeGrade` / `computeOneThingToImprove` in `matchImporter.js`). `pre_key_item_deaths` and `spike_unused_count` are 0 for imported matches.
+Grade and `one_thing_to_improve` are computed from KDA, GPM, and key item timing (see `computeGrade` / `computeOneThingToImprove` in `matchImporter.js`). `spike_unused_count` and `low_farm_windows` are always 0 for imported matches. `pre_key_item_deaths` is a **lower bound** computed from reconstructed deaths — see "Import Confirm feature → `deaths_before_completion` in OpenDota imports" for the precision limitation.
 
 ### API
 
@@ -624,8 +629,8 @@ dota-ai-coach/
 │       ├── matchImporter.test.js      ← 39 assertions (pure helpers only)
 │       ├── openDotaRaw.test.js        ← 47 assertions (mock network, DB round-trip)
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
-│       ├── importConfirm.test.js          ← 98 assertions (normalizeForMatch, confirmImport + events + deathStats + kill/death)
-│       ├── openDotaKeyItemAnalyzer.test.js ← 45 assertions (buildPurchaseMap, analyzeKeyItemTimings)
+│       ├── importConfirm.test.js          ← 104 assertions (normalizeForMatch, confirmImport + events + deathStats + kill/death + pre_key_item_deaths)
+│       ├── openDotaKeyItemAnalyzer.test.js ← 67 assertions (buildPurchaseMap, analyzeKeyItemTimings + deathTimes, countPreKeyItemDeaths, GSI cross-validation)
 │       ├── openDotaEventBuilder.test.js         ← 110 assertions (isConsumable, buildEventsFromOpenDota, buildKillDeathEvents)
 │       ├── openDotaKillDeathExtractor.test.js   ← 60 assertions (heroDisplayNameFromInternal, extractKillDeath)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)

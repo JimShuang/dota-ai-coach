@@ -322,6 +322,30 @@ for (let i = 1; i < timedEvents.length; i++) {
   );
 }
 
+// pre_key_item_deaths in the matches row:
+//   Reconstructed deaths at t=400 (Axe) and t=700 (Pudge); vanguard at t=540
+//   t=400: vanguard at 540 > 400 → pre-key-item ✓
+//   t=700: vanguard done, blink not purchased → pre-key-item ✓
+//   → pre_key_item_deaths = 2 (both reconstructed deaths are pre-key-item)
+assert(detail2.match.pre_key_item_deaths === 2,
+  'pre_key_item_deaths = 2 (both reconstructed deaths are pre-key-item)');
+
+// deaths_before_completion in key_item_timings:
+//   vanguard completed at t=540 → deaths < 540 = [400].length = 1
+//   blink not completed → all reconstructed deaths = 2
+const vgTiming = detail2.keyItemTimings.find(t => t.item_name === 'item_vanguard');
+assert(vgTiming != null,                           'vanguard timing row present in DB');
+assert(vgTiming.deaths_before_completion === 1,
+  'vanguard deaths_before_completion = 1 (death at t=400 < t=540)');
+
+const blTiming = detail2.keyItemTimings.find(t => t.item_name === 'item_blink');
+assert(blTiming != null,                           'blink timing row present in DB');
+assert(blTiming.deaths_before_completion === 2,
+  'blink deaths_before_completion = 2 (not completed → all 2 reconstructed deaths)');
+
+// confirmImport return value includes pre_key_item_deaths
+assert(result2.pre_key_item_deaths === 2, 'result2.pre_key_item_deaths = 2');
+
 // ── Summary ────────────────────────────────────────────────────────────────
 
 console.log(`\n${'─'.repeat(55)}`);
