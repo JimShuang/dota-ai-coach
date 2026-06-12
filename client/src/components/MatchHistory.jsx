@@ -101,6 +101,15 @@ function MatchDetail({ matchId, onBack }) {
 
   const { match: m, events, keyItemTimings } = detail;
 
+  // For OpenDota imports: how many deaths couldn't be located in any kills_log
+  // (tower/creep/Roshan kills have no timestamp entry). Uses match row as source of truth
+  // for total deaths; event count gives reconstructed lower bound.
+  const isImport = m.source === 'opendota_import';
+  const reconstructedDeaths = isImport
+    ? events.filter((e) => e.type === 'hero_death' && e.snapshot?.source === 'opendota_import').length
+    : 0;
+  const missingDeaths = isImport ? Math.max(0, (m.deaths || 0) - reconstructedDeaths) : 0;
+
   // Render a single event row — shared by grouped and ungrouped paths.
   // Snapshot fields are optional: only hero_death has full snapshots; OpenDota
   // events carry a minimal { item, source, isConsumable } shape. Missing fields
@@ -110,9 +119,18 @@ function MatchDetail({ matchId, onBack }) {
       critical: '#f85149', danger: '#f85149',
       warning: '#e3b341', success: '#56d364', info: '#79c0ff',
     }[e.severity] || '#8b949e';
+
+    // hero_kill gets a sword glyph; hero_death a skull — rest use the raw type name
+    const typeLabel = e.type === 'hero_kill'  ? '⚔ kill'
+                    : e.type === 'hero_death' ? '☠ death'
+                    : e.type.replace(/_/g, ' ');
+
     const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
+    // OpenDota import deaths carry only {killer, deathNumber, source} — no gold/items
+    const isImportedDeath = snap?.source === 'opendota_import';
+
     let deathItems = [];
-    if (snap) {
+    if (snap && !isImportedDeath) {
       if (Array.isArray(snap.itemsAtDeath) && snap.itemsAtDeath.length > 0) {
         deathItems = snap.itemsAtDeath.filter((n) => n !== 'item_tpscroll');
       } else if (snap.inventoryAtDeath) {
@@ -130,11 +148,12 @@ function MatchDetail({ matchId, onBack }) {
             background: severityColor + '22', padding: '1px 6px', borderRadius: '4px',
             flexShrink: 0, alignSelf: 'center',
           }}>
-            {e.type.replace(/_/g, ' ')}
+            {typeLabel}
           </span>
           <span style={{ fontSize: '12px', color: '#c9d1d9', lineHeight: '1.4' }}>{e.message}</span>
         </div>
-        {snap && (
+        {/* GSI-rich death detail — suppressed for imported deaths which have no gold/item data */}
+        {snap && !isImportedDeath && (
           <div style={{ marginLeft: '46px', marginTop: '3px', fontSize: '11px', color: '#8b949e66', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             {snap.goldBeforeDeathPenalty != null && (
               <span>死前金币 <span style={{ color: '#e3b341' }}>{snap.goldBeforeDeathPenalty}g</span></span>
@@ -283,6 +302,18 @@ function MatchDetail({ matchId, onBack }) {
           <div style={{ fontSize: '12px', color: '#8b949e', fontWeight: '600', marginBottom: '10px' }}>
             事件时间线 ({events.length} 条)
           </div>
+          {isImport && missingDeaths > 0 && (
+            <div style={{
+              background: '#0d2137', border: '1px solid #79c0ff33',
+              borderRadius: '6px', padding: '8px 12px', marginBottom: '10px',
+              display: 'flex', alignItems: 'center', gap: '8px',
+            }}>
+              <span style={{ color: '#79c0ff', fontSize: '13px', flexShrink: 0 }}>ℹ</span>
+              <span style={{ fontSize: '12px', color: '#8b949e' }}>
+                已定位 {reconstructedDeaths}/{m.deaths} 次死亡，其余 {missingDeaths} 次来自防御塔/野怪/Roshan，无法从日志确定时间
+              </span>
+            </div>
+          )}
           <div style={{ maxHeight: '400px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
             {groupEventsForDisplay(events).map((item) => {
               // Collapsed consumable group
