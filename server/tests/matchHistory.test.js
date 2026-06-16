@@ -50,6 +50,7 @@ db.exec(`
     is_excluded INTEGER DEFAULT 0,
     excluded_at TEXT,
     excluded_reason TEXT,
+    source TEXT DEFAULT 'gsi',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -138,6 +139,20 @@ function includeMatch(matchId) {
   return db.prepare(
     'UPDATE matches SET is_excluded = 0, excluded_at = NULL, excluded_reason = NULL WHERE match_id = ?'
   ).run(matchId);
+}
+
+function deleteImportedMatch(matchId) {
+  const row = db.prepare('SELECT source FROM matches WHERE match_id = ?').get(matchId);
+  if (!row) return { deleted: false, reason: 'not_found' };
+  if (row.source !== 'opendota_import') return { deleted: false, reason: 'gsi_match' };
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM match_events WHERE match_id = ?').run(matchId);
+    db.prepare('DELETE FROM key_item_timings WHERE match_id = ?').run(matchId);
+    db.prepare("DELETE FROM matches WHERE match_id = ? AND source = 'opendota_import'").run(matchId);
+  })();
+
+  return { deleted: true };
 }
 
 function getMatches(limit, includeExcluded) {
@@ -460,6 +475,44 @@ assert(timingsAfterExclude.length > 0, 'key_item_timings preserved after exclude
 console.log('\nexclude non-existent match returns 0 changes:');
 const noMatch = excludeMatch('nonexistent_match_xyz', 'other');
 assert(noMatch.changes === 0, 'excludeMatch on missing match_id returns 0 changes');
+
+// ── Tests: Hard Delete (deleteImportedMatch) ───────────────────────────────
+
+console.log('\n── Hard Delete tests ─────────────────────────────────────────────────');
+
+const MATCH_DEL_IMPORT = 'test_delete_import_001';
+const MATCH_DEL_GSI    = 'test_delete_gsi_001';
+
+saveMatch({ ...mockMatchRow, match_id: MATCH_DEL_IMPORT });
+db.prepare("UPDATE matches SET source = 'opendota_import' WHERE match_id = ?").run(MATCH_DEL_IMPORT);
+saveMatchEvents(MATCH_DEL_IMPORT, mockEvents);
+saveKeyItemTimings(MATCH_DEL_IMPORT, computeKeyItemTimings(MATCH_DEL_IMPORT, centaurProfile, mockEvents));
+
+saveMatch({ ...mockMatchRow, match_id: MATCH_DEL_GSI });
+
+console.log('\ndelete an opendota_import match removes all three tables:');
+const delResult = deleteImportedMatch(MATCH_DEL_IMPORT);
+assert(delResult.deleted === true, 'deleteImportedMatch returns deleted: true');
+assert(db.prepare('SELECT 1 FROM matches WHERE match_id = ?').get(MATCH_DEL_IMPORT) === undefined, 'matches row removed');
+assert(db.prepare('SELECT 1 FROM match_events WHERE match_id = ?').get(MATCH_DEL_IMPORT) === undefined, 'match_events rows removed');
+assert(db.prepare('SELECT 1 FROM key_item_timings WHERE match_id = ?').get(MATCH_DEL_IMPORT) === undefined, 'key_item_timings rows removed');
+
+console.log('\nsame match_id can be re-inserted after delete:');
+saveMatch({ ...mockMatchRow, match_id: MATCH_DEL_IMPORT });
+const reinserted = db.prepare('SELECT 1 FROM matches WHERE match_id = ?').get(MATCH_DEL_IMPORT);
+assert(reinserted !== undefined, 'match_id is reusable after hard delete');
+
+console.log('\nattempting to delete a gsi match is rejected:');
+const delGsiResult = deleteImportedMatch(MATCH_DEL_GSI);
+assert(delGsiResult.deleted === false, 'gsi match deletion returns deleted: false');
+assert(delGsiResult.reason === 'gsi_match', "reason is 'gsi_match'");
+const gsiStillThere = db.prepare('SELECT 1 FROM matches WHERE match_id = ?').get(MATCH_DEL_GSI);
+assert(gsiStillThere !== undefined, 'gsi match row is not deleted');
+
+console.log('\ndeleting a non-existent match:');
+const delMissing = deleteImportedMatch('nonexistent_match_for_delete');
+assert(delMissing.deleted === false, 'missing match deletion returns deleted: false');
+assert(delMissing.reason === 'not_found', "reason is 'not_found'");
 
 // ── Summary ───────────────────────────────────────────────────────────────
 

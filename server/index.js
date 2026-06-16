@@ -4,7 +4,7 @@ const {
   saveGameState, saveAlert,
   getRecentAlerts, getLatestState, getStatesByMatch,
   getMatches, getMatchById, getLongTermStats,
-  excludeMatch, includeMatch,
+  excludeMatch, includeMatch, deleteImportedMatch,
 } = require('./db');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
@@ -216,6 +216,15 @@ app.post('/api/history/matches/:matchId/include', (req, res) => {
   const result = includeMatch(req.params.matchId);
   if (result.changes === 0) return res.status(404).json({ error: 'Match not found' });
   res.json({ ok: true });
+});
+
+app.delete('/api/history/matches/:matchId', (req, res) => {
+  const result = deleteImportedMatch(req.params.matchId);
+  if (result.deleted) return res.json({ ok: true });
+  if (result.reason === 'gsi_match') {
+    return res.status(403).json({ error: 'GSI_MATCH_CANNOT_DELETE', message: 'GSI 比赛不支持删除，请使用排除功能' });
+  }
+  return res.status(404).json({ error: 'Match not found' });
 });
 
 app.get('/api/history/matches/:matchId', (req, res) => {

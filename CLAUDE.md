@@ -288,8 +288,8 @@ The server uses `require()` / `module.exports` throughout. VS Code shows a 80001
 ### 10. Test isolation via matchId
 `eventLogger.test.js` uses `resetForMatch(uniqueId)` at the start of each test group. Tests must use distinct match IDs to avoid state bleed between groups.
 
-### 11. Exclude Match never deletes raw data
-`excludeMatch()` only sets `is_excluded = 1` on the `matches` row. All associated `match_events` and `key_item_timings` rows are intentionally left untouched. Excluded matches are hidden from `getMatches()` (default) and all `getLongTermStats()` sub-queries, but `getMatchById()` still returns full detail regardless of exclusion state.
+### 11. Two match-removal mechanisms, split by data recoverability
+`excludeMatch()` (soft exclusion, all matches) only sets `is_excluded = 1` on the `matches` row — `match_events` and `key_item_timings` are left untouched, and `getMatchById()` still returns full detail regardless of exclusion state. `deleteImportedMatch()` (hard delete, `source = 'opendota_import'` only) atomically removes the `matches`, `match_events`, and `key_item_timings` rows for that match inside one `transaction()`. GSI matches can never be hard-deleted — their data is not recoverable, unlike OpenDota imports whose source data stays cached in `raw_opendota_matches` and can be re-imported.
 
 ---
 
@@ -298,7 +298,7 @@ The server uses `require()` / `module.exports` throughout. VS Code shows a 80001
 ```
 server/tests/
   suggestKeyItem.test.js          18 assertions — pure function, no I/O
-  matchHistory.test.js            79 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include
+  matchHistory.test.js            89 assertions — computeKeyItemTimings, SQLite round-trip, exclude/include, hard delete
   eventLogger.test.js             53 assertions — death snapshot, item fields, normalizeItems
   matchImporter.test.js           39 assertions — opendotaKeyToItemName, buildKeyItemTimings, computeGrade, computeOneThingToImprove
   openDotaRaw.test.js             47 assertions — detectParsedStatus, buildWarnings, fetchAndCache (mock), getCached
@@ -311,7 +311,7 @@ server/tests/
 
 Run with: `node server/tests/<file>.test.js`
 
-All 630 assertions must pass before merging any change.
+All 640 assertions must pass before merging any change.
 
 ---
 
@@ -542,7 +542,16 @@ Imported matches have `import_source = 'opendota'`; live matches have `import_so
 
 Allows users to mark specific matches as excluded so they don't pollute stats (e.g., bot games, dev tests, corrupted data).
 
-### Data safety invariant
+Two removal mechanisms exist, split by whether the underlying match data is recoverable:
+
+| Mechanism | Applies to | Effect |
+|-----------|-----------|--------|
+| **Soft exclusion** (`excludeMatch`) | All matches (`gsi` and `opendota_import`) | Sets `is_excluded=1`; data never deleted |
+| **Hard delete** (`deleteImportedMatch`) | `opendota_import` only | Atomically deletes `matches` + `match_events` + `key_item_timings` rows |
+
+GSI matches can only be soft-excluded — there is no underlying source to re-derive them from, so deleting one would be permanent and irreversible. OpenDota imports can be hard-deleted because their source data lives in the `raw_opendota_matches` cache (untouched by the delete) and the match can simply be re-imported later — e.g., if it was originally `unparsed` and OpenDota has since finished parsing the replay. Hard-deleting frees up the `match_id UNIQUE` constraint so the same Dota match ID can be re-confirmed.
+
+### Data safety invariant (soft exclusion)
 **Never deletes events or timings.** Only `matches.is_excluded` changes. All `match_events` and `key_item_timings` rows are preserved.
 
 ### API
@@ -552,6 +561,7 @@ Allows users to mark specific matches as excluded so they don't pollute stats (e
 | `GET` | `/api/history/matches?includeExcluded=true` | — | Returns all matches including excluded |
 | `POST` | `/api/history/matches/:matchId/exclude` | `{ reason }` | Sets `is_excluded=1`, records `excluded_at` and `excluded_reason` |
 | `POST` | `/api/history/matches/:matchId/include` | — | Resets `is_excluded=0`, clears `excluded_at`/`excluded_reason` |
+| `DELETE` | `/api/history/matches/:matchId` | — | Hard-deletes an `opendota_import` match (3 tables). 404 if not found. **403** `{ error: 'GSI_MATCH_CANNOT_DELETE' }` if `source = 'gsi'` |
 
 Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_data`, `duplicate`, `other`.
 
@@ -559,6 +569,7 @@ Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_da
 
 - `excludeMatch(matchId, reason)` — UPDATE only; returns `{ changes }` (0 if not found)
 - `includeMatch(matchId)` — reverses exclusion
+- `deleteImportedMatch(matchId)` — hard delete, `opendota_import` only; runs the 3-table delete inside one `db.transaction()`; returns `{ deleted: true }` or `{ deleted: false, reason: 'not_found' | 'gsi_match' }`. `raw_opendota_matches` is never touched.
 - `getMatches(limit, includeExcluded=false)` — filters `WHERE is_excluded = 0` by default
 - `getLongTermStats(recentCount)` — all sub-queries filter `AND is_excluded = 0`
 
@@ -567,7 +578,9 @@ Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_da
 - **"显示已排除" checkbox** at top of list — re-fetches with `includeExcluded=true`
 - **Excluded match rows** — 55% opacity, "已排除" badge, no click-through to detail, "恢复" button
 - **Non-excluded rows** — "排除" button (stops propagation so row click still works)
-- **Exclude dialog** — fixed overlay modal with reason `<select>` dropdown + confirm/cancel
+- **"🗑 删除" button** — shown only for `source === 'opendota_import'` rows (list row + match detail header); never shown for `gsi` matches
+- **Shared confirm dialog** — `actionDialog` state with a `mode: 'exclude' | 'delete'` field drives the title/body/button text; `'exclude'` shows the reason `<select>`, `'delete'` shows the irreversible-action warning text instead
+- **Error toast** — fixed bottom-right banner shown on delete failure (e.g. attempting to delete a GSI match), auto-dismisses after 4s or on click
 
 ### Migration
 `server/db.js` runs `ALTER TABLE matches ADD COLUMN ...` (with try-catch) on startup so existing `coach.db` files without the new columns are migrated automatically.

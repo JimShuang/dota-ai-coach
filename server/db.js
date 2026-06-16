@@ -262,6 +262,23 @@ function includeMatch(matchId) {
   ).run(matchId);
 }
 
+// Hard delete — opendota_import matches only. GSI matches are irreplaceable and
+// must go through excludeMatch() instead. raw_opendota_matches cache is left
+// intact so the match can be re-imported (e.g. once OpenDota finishes parsing it).
+function deleteImportedMatch(matchId) {
+  const row = db.prepare('SELECT source FROM matches WHERE match_id = ?').get(matchId);
+  if (!row) return { deleted: false, reason: 'not_found' };
+  if (row.source !== 'opendota_import') return { deleted: false, reason: 'gsi_match' };
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM match_events WHERE match_id = ?').run(matchId);
+    db.prepare('DELETE FROM key_item_timings WHERE match_id = ?').run(matchId);
+    db.prepare("DELETE FROM matches WHERE match_id = ? AND source = 'opendota_import'").run(matchId);
+  })();
+
+  return { deleted: true };
+}
+
 function getMatches(limit = 50, includeExcluded = false) {
   const where = includeExcluded ? '' : 'WHERE is_excluded = 0';
   return db.prepare(`SELECT * FROM matches ${where} ORDER BY id DESC LIMIT ?`).all(limit);
@@ -330,6 +347,6 @@ module.exports = {
   saveGameState, saveAlert, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
   matchExists, saveMatch, saveMatchEvents, saveKeyItemTimings,
   getMatches, getMatchById, getLongTermStats,
-  excludeMatch, includeMatch,
+  excludeMatch, includeMatch, deleteImportedMatch,
   saveRawOpendotaMatch, getRawOpendotaMatch, rawOpendotaMatchExists,
 };

@@ -83,7 +83,7 @@ function groupEventsForDisplay(evts) {
 
 // ── Match detail view ──────────────────────────────────────────────────────
 
-function MatchDetail({ matchId, onBack }) {
+function MatchDetail({ matchId, onBack, onDelete }) {
   const [detail, setDetail]           = useState(null);
   const [loading, setLoading]         = useState(true);
   const [expandedGroups, setExpandedGroups] = useState(new Set());
@@ -187,6 +187,14 @@ function MatchDetail({ matchId, onBack }) {
         {m.source === 'opendota_import'
           ? <Badge text="OpenDota 导入" color="#79c0ff" bg="#0d2137" />
           : <Badge text="Live GSI" color="#8b949e" bg="#21262d" />}
+        {m.source === 'opendota_import' && (
+          <button
+            onClick={() => onDelete(m.match_id, `${heroDisplayName(m.hero)} · ${formatDate(m.end_time)}`)}
+            style={{ background: '#3d1a1a', border: '1px solid #f85149', borderRadius: '6px', padding: '3px 10px', color: '#f85149', fontSize: '11px', cursor: 'pointer' }}
+          >
+            🗑 删除
+          </button>
+        )}
         <span style={{ marginLeft: 'auto', fontSize: '12px', color: '#8b949e' }}>
           {formatDate(m.end_time)}
           {m.duration ? ` · ${Math.round(m.duration / 60)} 分钟` : ''}
@@ -369,9 +377,16 @@ export default function MatchHistory() {
   const [loading, setLoading]             = useState(true);
   const [selectedId, setSelectedId]       = useState(null);
   const [showExcluded, setShowExcluded]   = useState(false);
-  const [excludeDialog, setExcludeDialog] = useState(null);
+  const [actionDialog, setActionDialog]   = useState(null); // { mode: 'exclude' | 'delete', matchId, label }
   const [excludeReason, setExcludeReason] = useState('bot_test');
-  const [excluding, setExcluding]         = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [toast, setToast]                 = useState(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   function loadMatches(incExcluded) {
     setLoading(true);
@@ -386,16 +401,37 @@ export default function MatchHistory() {
   useEffect(() => { loadMatches(showExcluded); }, [showExcluded]);
 
   function handleExcludeConfirm() {
-    if (!excludeDialog) return;
-    setExcluding(true);
-    fetch(`/api/history/matches/${excludeDialog.matchId}/exclude`, {
+    setActionLoading(true);
+    fetch(`/api/history/matches/${actionDialog.matchId}/exclude`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reason: excludeReason }),
     })
-      .then(() => { setExcludeDialog(null); loadMatches(showExcluded); })
-      .catch(() => {})
-      .finally(() => setExcluding(false));
+      .then(() => { setActionDialog(null); loadMatches(showExcluded); })
+      .catch(() => setToast({ message: '排除失败' }))
+      .finally(() => setActionLoading(false));
+  }
+
+  function handleDeleteConfirm() {
+    setActionLoading(true);
+    const { matchId } = actionDialog;
+    fetch(`/api/history/matches/${matchId}`, { method: 'DELETE' })
+      .then(async (r) => {
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          throw new Error(body.message || '删除失败');
+        }
+        setActionDialog(null);
+        if (selectedId === matchId) setSelectedId(null);
+        loadMatches(showExcluded);
+      })
+      .catch((err) => setToast({ message: err.message }))
+      .finally(() => setActionLoading(false));
+  }
+
+  function handleActionConfirm() {
+    if (!actionDialog) return;
+    return actionDialog.mode === 'delete' ? handleDeleteConfirm() : handleExcludeConfirm();
   }
 
   function handleInclude(matchId, e) {
@@ -408,7 +444,11 @@ export default function MatchHistory() {
   if (selectedId) {
     return (
       <div style={card}>
-        <MatchDetail matchId={selectedId} onBack={() => setSelectedId(null)} />
+        <MatchDetail
+          matchId={selectedId}
+          onBack={() => setSelectedId(null)}
+          onDelete={(matchId, label) => setActionDialog({ mode: 'delete', matchId, label })}
+        />
       </div>
     );
   }
@@ -495,25 +535,38 @@ export default function MatchHistory() {
                   {formatDate(m.end_time)}
                 </div>
 
-                {isExcluded ? (
-                  <button
-                    onClick={(e) => handleInclude(m.match_id, e)}
-                    style={{ flexShrink: 0, background: 'transparent', border: '1px solid #30363d', borderRadius: '5px', padding: '3px 10px', color: '#8b949e', fontSize: '11px', cursor: 'pointer' }}
-                  >
-                    恢复
-                  </button>
-                ) : (
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setExcludeReason('bot_test');
-                      setExcludeDialog({ matchId: m.match_id, label: `${heroDisplayName(m.hero)} · ${formatDate(m.end_time)}` });
-                    }}
-                    style={{ flexShrink: 0, background: 'transparent', border: '1px solid #30363d', borderRadius: '5px', padding: '3px 10px', color: '#8b949e', fontSize: '11px', cursor: 'pointer' }}
-                  >
-                    排除
-                  </button>
-                )}
+                <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+                  {isExcluded ? (
+                    <button
+                      onClick={(e) => handleInclude(m.match_id, e)}
+                      style={{ background: 'transparent', border: '1px solid #30363d', borderRadius: '5px', padding: '3px 10px', color: '#8b949e', fontSize: '11px', cursor: 'pointer' }}
+                    >
+                      恢复
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExcludeReason('bot_test');
+                        setActionDialog({ mode: 'exclude', matchId: m.match_id, label: `${heroDisplayName(m.hero)} · ${formatDate(m.end_time)}` });
+                      }}
+                      style={{ background: 'transparent', border: '1px solid #30363d', borderRadius: '5px', padding: '3px 10px', color: '#8b949e', fontSize: '11px', cursor: 'pointer' }}
+                    >
+                      排除
+                    </button>
+                  )}
+                  {m.source === 'opendota_import' && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActionDialog({ mode: 'delete', matchId: m.match_id, label: `${heroDisplayName(m.hero)} · ${formatDate(m.end_time)}` });
+                      }}
+                      style={{ background: '#3d1a1a', border: '1px solid #f85149', borderRadius: '5px', padding: '3px 10px', color: '#f85149', fontSize: '11px', cursor: 'pointer' }}
+                    >
+                      🗑 删除
+                    </button>
+                  )}
+                </div>
 
                 {!isExcluded && <span style={{ color: '#30363d', fontSize: '16px' }}>›</span>}
               </div>
@@ -522,46 +575,72 @@ export default function MatchHistory() {
         </div>
       )}
 
-      {/* Exclude confirmation dialog */}
-      {excludeDialog && (
+      {/* Exclude / delete confirmation dialog */}
+      {actionDialog && (
         <div
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}
-          onClick={() => setExcludeDialog(null)}
+          onClick={() => setActionDialog(null)}
         >
           <div
             style={{ background: '#161b22', border: '1px solid #30363d', borderRadius: '12px', padding: '24px', minWidth: '320px', maxWidth: '400px' }}
             onClick={(e) => e.stopPropagation()}
           >
-            <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3', marginBottom: '6px' }}>排除比赛记录</div>
-            <div style={{ fontSize: '12px', color: '#8b949e', marginBottom: '18px' }}>{excludeDialog.label}</div>
-            <div style={{ marginBottom: '18px' }}>
-              <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>排除原因</label>
-              <select
-                value={excludeReason}
-                onChange={(e) => setExcludeReason(e.target.value)}
-                style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: '6px', padding: '8px 10px', color: '#e6edf3', fontSize: '13px', cursor: 'pointer' }}
-              >
-                {EXCLUDE_REASONS.map((r) => (
-                  <option key={r.value} value={r.value}>{r.label}</option>
-                ))}
-              </select>
+            <div style={{ fontSize: '14px', fontWeight: '700', color: '#e6edf3', marginBottom: '6px' }}>
+              {actionDialog.mode === 'delete' ? '彻底删除此比赛？' : '排除比赛记录'}
             </div>
+            <div style={{ fontSize: '12px', color: '#8b949e', marginBottom: actionDialog.mode === 'delete' ? '4px' : '18px' }}>
+              {actionDialog.label}
+            </div>
+            {actionDialog.mode === 'delete' ? (
+              <div style={{ fontSize: '12px', color: '#f85149', marginBottom: '18px', lineHeight: '1.6' }}>
+                此操作不可撤销。将删除该比赛的所有记录。OpenDota 缓存保留，可重新导入。
+              </div>
+            ) : (
+              <div style={{ marginBottom: '18px' }}>
+                <label style={{ fontSize: '12px', color: '#8b949e', display: 'block', marginBottom: '6px' }}>排除原因</label>
+                <select
+                  value={excludeReason}
+                  onChange={(e) => setExcludeReason(e.target.value)}
+                  style={{ width: '100%', background: '#0d1117', border: '1px solid #30363d', borderRadius: '6px', padding: '8px 10px', color: '#e6edf3', fontSize: '13px', cursor: 'pointer' }}
+                >
+                  {EXCLUDE_REASONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
               <button
-                onClick={() => setExcludeDialog(null)}
+                onClick={() => setActionDialog(null)}
                 style={{ background: 'transparent', border: '1px solid #30363d', borderRadius: '6px', padding: '7px 16px', color: '#8b949e', fontSize: '12px', cursor: 'pointer' }}
               >
                 取消
               </button>
               <button
-                onClick={handleExcludeConfirm}
-                disabled={excluding}
-                style={{ background: '#3d1a1a', border: '1px solid #f85149', borderRadius: '6px', padding: '7px 16px', color: '#f85149', fontSize: '12px', cursor: 'pointer', fontWeight: '600', opacity: excluding ? 0.6 : 1 }}
+                onClick={handleActionConfirm}
+                disabled={actionLoading}
+                style={{ background: '#3d1a1a', border: '1px solid #f85149', borderRadius: '6px', padding: '7px 16px', color: '#f85149', fontSize: '12px', cursor: 'pointer', fontWeight: '600', opacity: actionLoading ? 0.6 : 1 }}
               >
-                {excluding ? '排除中...' : '确认排除'}
+                {actionLoading
+                  ? (actionDialog.mode === 'delete' ? '删除中...' : '排除中...')
+                  : (actionDialog.mode === 'delete' ? '确认删除' : '确认排除')}
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Error toast */}
+      {toast && (
+        <div
+          onClick={() => setToast(null)}
+          style={{
+            position: 'fixed', bottom: '20px', right: '20px', zIndex: 1100,
+            background: '#3d1a1a', border: '1px solid #f85149', borderRadius: '8px',
+            padding: '10px 16px', color: '#f85149', fontSize: '12px', cursor: 'pointer',
+          }}
+        >
+          {toast.message}
         </div>
       )}
     </div>
