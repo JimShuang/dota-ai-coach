@@ -12,7 +12,7 @@ const { getProfileByDotaName } = require('./data/offlaneHeroProfiles');
 const { getHeroInternalName } = require('./data/dotaHeroNames');
 const { computeGrade, computeOneThingToImprove } = require('./matchImporter');
 const { analyzeKeyItemTimings, buildPurchaseMap, countPreKeyItemDeaths } = require('./openDotaKeyItemAnalyzer');
-const { buildEventsFromOpenDota, buildKillDeathEvents } = require('./openDotaEventBuilder');
+const { buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents } = require('./openDotaEventBuilder');
 const { extractKillDeath } = require('./openDotaKillDeathExtractor');
 
 // ── Synthetic match_id ─────────────────────────────────────────────────────
@@ -164,7 +164,8 @@ function confirmImport(matchId, playerSlot) {
   };
   const purchaseEvents  = buildEventsFromOpenDota(player, profile, matchInfo);
   const kdEvents        = buildKillDeathEvents(killDeath);
-  const allEvents       = [...purchaseEvents, ...kdEvents].sort((a, b) => a.game_time - b.game_time);
+  const objectiveEvents = buildObjectiveEvents(cached.raw_json.objectives, Number(playerSlot));
+  const allEvents       = [...purchaseEvents, ...kdEvents, ...objectiveEvents].sort((a, b) => a.game_time - b.game_time);
   saveMatchEvents(sid, allEvents);
 
   return {

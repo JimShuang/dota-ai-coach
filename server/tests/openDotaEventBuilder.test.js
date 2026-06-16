@@ -1,8 +1,9 @@
 // Run: node server/tests/openDotaEventBuilder.test.js
 
-const { buildEventsFromOpenDota, buildKillDeathEvents, isConsumable, CONSUMABLE_ITEMS } = require('../openDotaEventBuilder');
+const { buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents, isConsumable, CONSUMABLE_ITEMS } = require('../openDotaEventBuilder');
 const { analyzeKeyItemTimings } = require('../openDotaKeyItemAnalyzer');
 const { PROFILES } = require('../data/offlaneHeroProfiles');
+const { heroDisplayNameFromInternal } = require('../openDotaKillDeathExtractor');
 
 let passed = 0;
 let failed = 0;
@@ -265,6 +266,139 @@ assert(kdDefault.length === 0, 'missing kills/deaths properties → empty array'
 // No-arg call → empty array
 const kdNoArg   = buildKillDeathEvents();
 assert(kdNoArg.length === 0, 'no-arg call → empty array');
+
+// ── buildObjectiveEvents ─────────────────────────────────────────────────
+
+console.log('\n── buildObjectiveEvents ──────────────────────────────────────────────');
+
+// Fixture mirrors real objectives[] shapes seen in cached match 8849623934
+// (parsed_status='ok') — tower1 (with lane), tower4 (no lane), barracks,
+// roshan, plus irrelevant chat-message types and an uncredited creep kill.
+const OBJECTIVES_FIXTURE = [
+  { time: 61,   type: 'CHAT_MESSAGE_FIRSTBLOOD', key: '0', slot: 6, player_slot: 129 },
+  { time: 828,  type: 'building_kill', unit: 'npc_dota_hero_razor',       key: 'npc_dota_goodguys_tower1_bot', slot: 7, player_slot: 130 },
+  { time: 966,  type: 'building_kill', unit: 'npc_dota_hero_drow_ranger', key: 'npc_dota_badguys_tower1_mid',  slot: 3, player_slot: 3 },
+  { time: 1164, type: 'building_kill', unit: 'npc_dota_creep_goodguys_ranged', key: 'npc_dota_badguys_tower1_bot' }, // no player credit
+  { time: 1570, type: 'CHAT_MESSAGE_COURIER_LOST', team: 3, value: 100, killer: 1 },
+  { time: 1677, type: 'CHAT_MESSAGE_ROSHAN_KILL', team: 2 },
+  { time: 1677, type: 'CHAT_MESSAGE_AEGIS', slot: 3, player_slot: 3 },
+  { time: 1775, type: 'building_kill', unit: 'npc_dota_hero_drow_ranger', key: 'npc_dota_badguys_range_rax_mid',  slot: 3, player_slot: 3 },
+  { time: 1927, type: 'building_kill', unit: 'npc_dota_hero_void_spirit', key: 'npc_dota_badguys_melee_rax_mid', slot: 1, player_slot: 1 },
+  { time: 2427, type: 'building_kill', unit: 'npc_dota_hero_drow_ranger', key: 'npc_dota_badguys_tower4',        slot: 3, player_slot: 3 },
+  { time: 2458, type: 'building_kill', unit: 'npc_dota_hero_drow_ranger', key: 'npc_dota_badguys_fort',          slot: 3, player_slot: 3 }, // ancient — not a recognized key
+];
+
+// Imported player is Razor at player_slot 130 (dire) — same as the real match.
+const objEvents = buildObjectiveEvents(OBJECTIVES_FIXTURE, 130);
+
+assert(objEvents.every(e => e.type === 'objective'), 'every event has type objective');
+assert(objEvents.every(e => e.snapshot.source === 'opendota_import'), 'every snapshot.source = opendota_import');
+
+// Imported player (Razor, slot 130) is on dire. tower1 destroys a *radiant* (goodguys)
+// tower — an enemy structure from our dire player's perspective → 'success'.
+const tower1 = objEvents.find(e => e.game_time === 828);
+assert(tower1 !== undefined,                          'tower1 (radiant, bot) event built');
+assert(tower1.snapshot.objectiveType === 'tower',      'tower1 objectiveType = tower');
+assert(tower1.snapshot.team === 'radiant',             'tower1 team = radiant (structure destroyed belonged to radiant)');
+assert(tower1.snapshot.lane === 'bot',                 'tower1 lane = bot');
+assert(tower1.snapshot.tier === 1,                     'tower1 tier = 1');
+assert(tower1.snapshot.barrackType === null,           'tower1 barrackType = null');
+assert(tower1.snapshot.executedBy === heroDisplayNameFromInternal('npc_dota_hero_razor'), 'tower1 executedBy resolved from unit');
+assert(tower1.severity === 'success',                  'tower1 severity = success (enemy/radiant structure destroyed)');
+
+// tower1Dire destroys a *dire* (badguys) tower — our own (dire) structure → 'danger'.
+const tower1Dire = objEvents.find(e => e.game_time === 966);
+assert(tower1Dire.snapshot.team === 'dire',            'tower1Dire team = dire');
+assert(tower1Dire.snapshot.lane === 'mid',             'tower1Dire lane = mid');
+assert(tower1Dire.snapshot.tier === 1,                 'tower1Dire tier = 1');
+assert(tower1Dire.severity === 'danger',               'tower1Dire severity = danger (own/dire structure destroyed)');
+
+// tower4 — no lane suffix in key
+const tower4 = objEvents.find(e => e.game_time === 2427);
+assert(tower4 !== undefined,                'tower4 (no-lane ancient tower) event built');
+assert(tower4.snapshot.objectiveType === 'tower', 'tower4 objectiveType = tower');
+assert(tower4.snapshot.lane === null,       'tower4 lane = null (no lane in key)');
+assert(tower4.snapshot.tier === 4,          'tower4 tier = 4');
+
+// barracks — ranged
+const raxRanged = objEvents.find(e => e.game_time === 1775);
+assert(raxRanged !== undefined,                       'range_rax event built');
+assert(raxRanged.snapshot.objectiveType === 'barracks', 'range_rax objectiveType = barracks');
+assert(raxRanged.snapshot.barrackType === 'ranged',    'range_rax barrackType = ranged');
+assert(raxRanged.snapshot.lane === 'mid',              'range_rax lane = mid');
+assert(raxRanged.snapshot.tier === null,               'range_rax tier = null');
+
+// barracks — melee
+const raxMelee = objEvents.find(e => e.game_time === 1927);
+assert(raxMelee !== undefined,                        'melee_rax event built');
+assert(raxMelee.snapshot.barrackType === 'melee',      'melee_rax barrackType = melee');
+
+// roshan
+const roshan = objEvents.find(e => e.snapshot.objectiveType === 'roshan');
+assert(roshan !== undefined,                  'roshan event built');
+assert(roshan.game_time === 1677,             'roshan game_time = 1677');
+assert(roshan.snapshot.team === 'radiant',    'roshan team = radiant (OpenDota team:2)');
+assert(roshan.snapshot.lane === null,         'roshan lane = null');
+assert(roshan.snapshot.tier === null,         'roshan tier = null');
+assert(roshan.snapshot.barrackType === null,  'roshan barrackType = null');
+assert(roshan.snapshot.executedBy === null,   'roshan executedBy = null (not credited by OpenDota)');
+assert(roshan.snapshot.key === null,          'roshan key = null (no raw key on this entry)');
+assert(roshan.severity === 'warning',         'roshan severity = warning');
+
+// executedBy null when destroyer is a creep (no player credit)
+const creepKill = objEvents.find(e => e.game_time === 1164);
+assert(creepKill !== undefined,               'creep-destroyed tower event still built');
+assert(creepKill.snapshot.executedBy === null, 'creep kill → executedBy = null');
+
+// fort/Ancient key — not tower/barracks/roshan, silently skipped
+assert(objEvents.find(e => e.game_time === 2458) === undefined, 'fort/Ancient key skipped (not a recognized objective)');
+
+// Unknown chat-message types — silently skipped, no thrown errors
+assert(objEvents.find(e => e.game_time === 61)   === undefined, 'CHAT_MESSAGE_FIRSTBLOOD skipped');
+assert(objEvents.find(e => e.game_time === 1570) === undefined, 'CHAT_MESSAGE_COURIER_LOST skipped');
+// CHAT_MESSAGE_AEGIS shares game_time 1677 with the roshan kill — only one event (roshan) should exist there
+assert(objEvents.filter(e => e.game_time === 1677).length === 1, 'CHAT_MESSAGE_AEGIS skipped (only the roshan event remains at time 1677)');
+
+// Recognized objective count: tower1 x2 (incl. creep-destroyed) + tower4 + rax x2 + roshan = 7
+// (fort + 4 chat-message types excluded from the 11 raw fixture entries)
+assert(objEvents.length === 7, `7 recognized objective events out of ${OBJECTIVES_FIXTURE.length} raw entries (got ${objEvents.length})`);
+
+// Sorted by game_time ascending
+const objTimes = objEvents.map(e => e.game_time);
+const objTimesSorted = [...objTimes].sort((a, b) => a - b);
+assert(JSON.stringify(objTimes) === JSON.stringify(objTimesSorted), 'objective events sorted by game_time ascending');
+
+// rawObjectives null/empty → []
+assert(buildObjectiveEvents(null, 130).length === 0,  'null rawObjectives → []');
+assert(buildObjectiveEvents([], 130).length === 0,    '[] rawObjectives → []');
+assert(buildObjectiveEvents(undefined, 130).length === 0, 'undefined rawObjectives → []');
+
+// Unknown type mixed with valid entries → array length matches only recognized entries (no throw)
+const unknownTypeFixture = [
+  { time: 100, type: 'SOME_UNKNOWN_FUTURE_TYPE', foo: 'bar' },
+  { time: 200, type: 'building_kill', unit: 'npc_dota_hero_axe', key: 'npc_dota_badguys_tower1_top', player_slot: 0 },
+];
+const unknownTypeEvents = buildObjectiveEvents(unknownTypeFixture, 130);
+assert(unknownTypeEvents.length === 1, 'unknown type entry skipped, only the recognized one remains');
+
+// ── buildObjectiveEvents merged into the full import event stream ─────────
+
+console.log('\n── buildObjectiveEvents merge into combined event stream ────────────');
+
+const kdForMerge = { kills: [{ time: 500, victim: 'Pudge' }], deaths: [{ time: 1500, killer: 'Axe' }] };
+const purchaseForMerge = buildEventsFromOpenDota(CENTAUR_PLAYER, CENTAUR_PROFILE, MATCH_INFO_RADIANT_WIN);
+const kdEventsForMerge = buildKillDeathEvents(kdForMerge);
+const objEventsForMerge = buildObjectiveEvents(OBJECTIVES_FIXTURE, 130);
+const merged = [...purchaseForMerge, ...kdEventsForMerge, ...objEventsForMerge].sort((a, b) => a.game_time - b.game_time);
+
+const mergedTimes = merged.map(e => e.game_time);
+const mergedTimesSorted = [...mergedTimes].sort((a, b) => a - b);
+assert(JSON.stringify(mergedTimes) === JSON.stringify(mergedTimesSorted), 'merged event stream (purchases + kills/deaths + objectives) sorted by game_time');
+assert(merged.some(e => e.type === 'objective'),       'merged stream contains objective events');
+assert(merged.some(e => e.type === 'item_purchased'),   'merged stream still contains item_purchased events');
+assert(merged.some(e => e.type === 'hero_kill'),        'merged stream still contains hero_kill events');
+assert(merged.some(e => e.type === 'hero_death'),       'merged stream still contains hero_death events');
+assert(merged.length === purchaseForMerge.length + kdEventsForMerge.length + objEventsForMerge.length, 'merged length = sum of all three sources');
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

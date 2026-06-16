@@ -151,10 +151,11 @@ Events are accumulated in-memory by `server/eventLogger.js` and flushed to `matc
 | `item_purchased` | each `purchase_log` entry | `info` | OpenDota import only |
 | `hero_kill`  | entry in `kills_log` of selected player | `success` | OpenDota import only |
 | `hero_death` (import) | entry in another player's `kills_log` matching selected hero | `danger` (fixed) | OpenDota import only |
+| `objective` *(planned, not yet implemented)* | tower / barracks destroyed, or Roshan killed | own structure destroyed → `danger`; enemy structure destroyed → `success`; Roshan → `warning` | OpenDota import only — sourced from `objectives[]` (top-level field in parsed OpenDota match data) |
 
-**OpenDota import event snapshots** are minimal — only `{ item, source: 'opendota_import', isConsumable }` for `item_purchased`; `{ item, source }` for `key_item_completed` / `power_spike_started`; `{ source }` for `game_end`. The full GSI death snapshot fields (`goldBeforeDeathPenalty`, `itemsAtDeath`, etc.) are absent and the frontend renders them defensively (missing fields silently skipped).
+**OpenDota import event snapshots** are minimal — only `{ item, source: 'opendota_import', isConsumable }` for `item_purchased`; `{ item, source }` for `key_item_completed` / `power_spike_started`; `{ source }` for `game_end`. The full GSI death snapshot fields (`goldBeforeDeathPenalty`, `itemsAtDeath`, etc.) are absent and the frontend renders them defensively (missing fields silently skipped). `hero_kill` and `hero_death` (import) have their own minimal snapshot shapes — see below.
 
-### `hero_death` snapshot fields
+### `hero_death` snapshot fields (GSI)
 
 ```js
 {
@@ -189,6 +190,55 @@ Events are accumulated in-memory by `server/eventLogger.js` and flushed to `matc
   pre_key_item, gold_gap_to_key_item, in_power_spike, has_tp,
 }
 ```
+
+### `hero_kill` snapshot fields (OpenDota import)
+
+Built by `buildKillDeathEvents()` in `server/openDotaEventBuilder.js` from `extractKillDeath()`'s `kills[]` output. `victim` is already the **resolved display name** (not the raw `npc_dota_hero_xxx` string) — `victimDisplayName` is currently a duplicate of the same value, kept as a separate field for forward compatibility with a future raw-internal-name field.
+
+```js
+{
+  victim:            string,  // display name of the hero killed, e.g. '屠夫（Pudge）' or 'Phantom Lancer'
+  victimDisplayName: string,  // same value as `victim` today (see note above)
+  killNumber:        number,  // this player's Nth kill in the match, 1-indexed
+  source:            'opendota_import',
+}
+```
+
+Display name resolution (`heroDisplayNameFromInternal()` in `openDotaKillDeathExtractor.js`): the 7 profile heroes use `中文（English）`; other known heroes use English only; unknown hero IDs fall back to a title-cased strip of the internal name.
+
+### `hero_death` snapshot fields (OpenDota import)
+
+Built by the same `buildKillDeathEvents()`, from `extractKillDeath()`'s `deaths[]` output (reconstructed by scanning every other player's `kills_log` for an entry matching the selected player's hero). Severity is always `danger` — GSI's `critical` tier depends on gold/items data not available from the basic OpenDota API. None of the GSI-rich fields (`goldBeforeDeathPenalty`, `itemsAtDeath`, `wasNearKeyItem`, etc.) are present.
+
+```js
+{
+  killer:            string,  // display name of the killer, e.g. '帕克（Puck）'
+  killerDisplayName: string,  // same value as `killer` today (see note above)
+  deathNumber:       number,  // this player's Nth death in the match, 1-indexed
+  source:            'opendota_import',
+}
+```
+
+**Precision limit:** tower, creep, and Roshan kills never appear in any player's `kills_log`, so `deaths.length` (reconstructed) can be less than `player.deaths` (OpenDota's true count) — the gap is reported separately as `deathStats: { reconstructed, total, missing }` by `extractKillDeath()`, not embedded in this snapshot.
+
+### `objective` snapshot fields (planned, not yet implemented)
+
+No code currently produces this event type — `objectives[]` (a top-level array in parsed OpenDota match data covering tower/barracks destructions and Roshan kills) is not yet read by any server module. This schema is documented ahead of implementation so `openDotaEventBuilder.js` has a fixed contract to build against.
+
+```js
+{
+  objectiveType: 'tower' | 'barracks' | 'roshan',
+  team:          'radiant' | 'dire',       // side whose structure was destroyed, or that killed Roshan
+  lane:          'top' | 'mid' | 'bot' | null,  // null for roshan
+  tier:          number | null,            // tower tier 1-4; null for barracks / roshan
+  barrackType:   'melee' | 'ranged' | null, // null for non-barracks
+  executedBy:    string | null,            // display name of the hero credited with the kill; null if unknown (e.g. tower deny/suicide)
+  key:           string,                   // raw OpenDota key, e.g. 'npc_dota_goodguys_tower1_top'
+  source:        'opendota_import',
+}
+```
+
+Severity rule once implemented: own structure destroyed → `danger`; enemy structure destroyed → `success`; Roshan kill → `warning`.
 
 ### `latestAliveSnapshot` pattern
 

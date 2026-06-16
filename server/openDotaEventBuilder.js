@@ -8,9 +8,10 @@
 // Field names match the GSI-originated event schema exactly:
 //   game_time (integer seconds), type, severity, message, snapshot (object).
 
-const { opendotaKeyToItemName } = require('./matchImporter');
-const { buildPurchaseMap }      = require('./openDotaKeyItemAnalyzer');
-const { getDisplayName }        = require('./data/itemLocalization');
+const { opendotaKeyToItemName }       = require('./matchImporter');
+const { buildPurchaseMap }            = require('./openDotaKeyItemAnalyzer');
+const { getDisplayName }              = require('./data/itemLocalization');
+const { heroDisplayNameFromInternal } = require('./openDotaKillDeathExtractor');
 
 // ── Consumable item set ────────────────────────────────────────────────────
 
@@ -166,4 +167,135 @@ function buildKillDeathEvents({ kills = [], deaths = [] } = {}) {
   return events;
 }
 
-module.exports = { buildEventsFromOpenDota, buildKillDeathEvents, isConsumable, CONSUMABLE_ITEMS };
+// ── Objective event builder ─────────────────────────────────────────────────
+
+const LANE_LABELS = { top: '上路', mid: '中路', bot: '下路' };
+
+// Raw OpenDota objectives[] key formats — verified against a real parsed_status='ok'
+// cached match (8849623934), not guessed:
+//   npc_dota_goodguys_tower1_bot     → tower, tier 1, lane bot, team radiant (goodguys)
+//   npc_dota_badguys_tower4          → tower, tier 4, no lane (ancient guardian towers)
+//   npc_dota_badguys_range_rax_mid   → barracks, ranged, lane mid
+//   npc_dota_badguys_melee_rax_top   → barracks, melee, lane top
+//   npc_dota_badguys_fort            → Ancient/throne — doesn't fit tower/barracks/roshan, skipped
+function parseBuildingKey(key) {
+  if (typeof key !== 'string') return null;
+  const team = key.includes('goodguys') ? 'radiant'
+             : key.includes('badguys')  ? 'dire'
+             : null;
+  if (!team) return null;
+
+  const towerMatch = key.match(/tower(\d)(?:_(top|mid|bot))?/);
+  if (towerMatch) {
+    return {
+      objectiveType: 'tower',
+      team,
+      lane:        towerMatch[2] || null,
+      tier:        Number(towerMatch[1]),
+      barrackType: null,
+    };
+  }
+
+  const raxMatch = key.match(/(melee|range)_rax_(top|mid|bot)/);
+  if (raxMatch) {
+    return {
+      objectiveType: 'barracks',
+      team,
+      lane:        raxMatch[2],
+      tier:        null,
+      barrackType: raxMatch[1] === 'range' ? 'ranged' : 'melee',
+    };
+  }
+
+  return null; // e.g. fort/ancient — not a recognized tower/barracks key
+}
+
+// objectives[] entries carry the killer's npc_dota_hero_xxx string directly in
+// `unit` when a hero gets credit (verified against real data) — no need to
+// cross-reference the players array. `unit` is a creep name (or absent) when
+// nothing is credited, which is exactly the "tower deny/suicide → null" case.
+function resolveExecutedBy(unit) {
+  if (typeof unit !== 'string' || !unit.startsWith('npc_dota_hero_')) return null;
+  return heroDisplayNameFromInternal(unit);
+}
+
+/**
+ * Build `objective` events (tower / barracks destroyed, Roshan killed) from
+ * raw OpenDota objectives[].
+ *
+ * @param {object[]|null} rawObjectives - raw.objectives from OpenDota match data
+ * @param {number}        playerSlot    - the imported player's own player_slot;
+ *                                         used only to decide severity (own vs enemy structure)
+ * @returns {object[]} Event objects ready for saveMatchEvents()
+ */
+function buildObjectiveEvents(rawObjectives, playerSlot) {
+  if (!Array.isArray(rawObjectives) || rawObjectives.length === 0) return [];
+
+  const ownTeam = Number(playerSlot) < 128 ? 'radiant' : 'dire';
+  const events = [];
+
+  for (const obj of rawObjectives) {
+    if (!obj || typeof obj !== 'object') continue;
+
+    if (obj.type === 'building_kill') {
+      const parsed = parseBuildingKey(obj.key);
+      if (!parsed) continue; // unrecognized key (e.g. Ancient/fort) — silently skip
+
+      const { objectiveType, team, lane, tier, barrackType } = parsed;
+      const executedBy = resolveExecutedBy(obj.unit);
+      const teamLabel   = team === 'radiant' ? '天辉' : '夜魇';
+      const severity    = team === ownTeam ? 'danger' : 'success';
+      const executorTag = executedBy ? `（${executedBy}）` : '';
+
+      const message = objectiveType === 'tower'
+        ? `${teamLabel}${lane ? LANE_LABELS[lane] : ''}${tier}塔被摧毁${executorTag}`
+        : `${teamLabel}${LANE_LABELS[lane]}${barrackType === 'melee' ? '近战' : '远程'}兵营被摧毁${executorTag}`;
+
+      events.push({
+        game_time: obj.time,
+        type:      'objective',
+        severity,
+        message,
+        snapshot: {
+          objectiveType, team, lane, tier, barrackType,
+          executedBy, key: obj.key, source: 'opendota_import',
+        },
+      });
+      continue;
+    }
+
+    if (obj.type === 'CHAT_MESSAGE_ROSHAN_KILL') {
+      const team = obj.team === 2 ? 'radiant' : obj.team === 3 ? 'dire' : null;
+      if (!team) continue; // unrecognized team value — silently skip
+
+      events.push({
+        game_time: obj.time,
+        type:      'objective',
+        severity:  'warning',
+        message:   `${team === 'radiant' ? '天辉' : '夜魇'}击杀肉山`,
+        snapshot: {
+          objectiveType: 'roshan',
+          team,
+          lane:        null,
+          tier:        null,
+          barrackType: null,
+          executedBy:  null, // OpenDota's basic objectives[] doesn't credit a Roshan killer
+          key:         null,
+          source:      'opendota_import',
+        },
+      });
+      continue;
+    }
+
+    // Unknown/irrelevant type (CHAT_MESSAGE_FIRSTBLOOD, CHAT_MESSAGE_COURIER_LOST,
+    // CHAT_MESSAGE_AEGIS, etc.) — silently skipped, not a recognized objective.
+  }
+
+  events.sort((a, b) => a.game_time - b.game_time);
+  return events;
+}
+
+module.exports = {
+  buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents,
+  isConsumable, CONSUMABLE_ITEMS,
+};
