@@ -3,9 +3,10 @@ const cors = require('cors');
 const {
   saveGameState, saveAlert,
   getRecentAlerts, getLatestState, getStatesByMatch,
-  getMatches, getMatchById, getLongTermStats,
+  getMatches, getMatchById, getMatchEvents, getLongTermStats,
   excludeMatch, includeMatch, deleteImportedMatch,
 } = require('./db');
+const { buildDeathDigest } = require('./openDotaDeathDigest');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -231,6 +232,12 @@ app.get('/api/history/matches/:matchId', (req, res) => {
   const detail = getMatchById(req.params.matchId);
   if (!detail) return res.status(404).json({ error: 'Match not found' });
   res.json(detail);
+});
+
+app.get('/api/history/matches/:matchId/death-digest', (req, res) => {
+  const events = getMatchEvents(req.params.matchId);
+  if (events === null) return res.status(404).json({ error: 'Match not found' });
+  res.json({ deaths: buildDeathDigest(events) });
 });
 
 app.get('/api/history/stats', (req, res) => {

@@ -67,6 +67,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaKeyItemAnalyzer.js` | Pure: `analyzeKeyItemTimings(matchId, player, profile)` — extracts timings from `purchase_log` |
 | `server/openDotaEventBuilder.js` | Pure: `buildEventsFromOpenDota(player, profile, matchInfo)` — builds `match_events` array from `purchase_log` |
 | `server/openDotaKillDeathExtractor.js` | Pure: `extractKillDeath(players, selectedPlayerSlot)` — extracts kill/death timeline from OpenDota `kills_log` |
+| `server/openDotaDeathDigest.js` | Pure: `buildDeathDigest(events)` — annotates each `hero_death` with a ±5s/+60s battlefield context window |
 
 ---
 
@@ -355,13 +356,14 @@ server/tests/
   importPreview.test.js           53 assertions — getHeroName, buildPreview (structure, fields, sort, edge cases)
   importConfirm.test.js          104 assertions — syntheticMatchId, getHeroInternalName, normalizeForMatch, confirmImport (DB + events + deathStats + kill/death events + pre_key_item_deaths + deaths_before_completion)
   openDotaKeyItemAnalyzer.test.js 67 assertions — buildPurchaseMap, analyzeKeyItemTimings (all cases + deathTimes), countPreKeyItemDeaths, GSI cross-validation
-  openDotaEventBuilder.test.js        110 assertions — isConsumable, buildEventsFromOpenDota, buildKillDeathEvents (all cases, cross-validation)
+  openDotaEventBuilder.test.js        162 assertions — isConsumable, buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents (all cases, cross-validation)
   openDotaKillDeathExtractor.test.js   60 assertions — heroDisplayNameFromInternal, extractKillDeath (all cases)
+  openDotaDeathDigest.test.js          61 assertions — buildDeathDigest (window boundaries, chainDeaths, killsNearby, objectivesLost/Gained, majorObjectiveLost, diedWithBuyback, slim shape)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 640 assertions must pass before merging any change.
+All 753 assertions must pass before merging any change.
 
 ---
 
@@ -612,6 +614,7 @@ GSI matches can only be soft-excluded — there is no underlying source to re-de
 | `POST` | `/api/history/matches/:matchId/exclude` | `{ reason }` | Sets `is_excluded=1`, records `excluded_at` and `excluded_reason` |
 | `POST` | `/api/history/matches/:matchId/include` | — | Resets `is_excluded=0`, clears `excluded_at`/`excluded_reason` |
 | `DELETE` | `/api/history/matches/:matchId` | — | Hard-deletes an `opendota_import` match (3 tables). 404 if not found. **403** `{ error: 'GSI_MATCH_CANNOT_DELETE' }` if `source = 'gsi'` |
+| `GET` | `/api/history/matches/:matchId/death-digest` | — | Returns `{ deaths: [...] }` — each `hero_death` event annotated with a battlefield context window; 404 if match not found; `deaths: []` if match has no deaths |
 
 Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_data`, `duplicate`, `other`.
 
@@ -634,6 +637,59 @@ Valid `reason` values: `bot_test`, `unranked`, `development_test`, `corrupted_da
 
 ### Migration
 `server/db.js` runs `ALTER TABLE matches ADD COLUMN ...` (with try-catch) on startup so existing `coach.db` files without the new columns are migrated automatically.
+
+---
+
+## Death Digest feature
+
+Associates each `hero_death` event with the battlefield context that happened nearby in time.
+
+### Pure function: `buildDeathDigest(events)`
+
+Input: full `match_events` array for one match, sorted by `game_time` ASC.
+Returns: array containing only `hero_death` entries, each extended with a `.context` object.
+
+### Window definition
+
+| Bound | Value | Rationale |
+|-------|-------|-----------|
+| `windowStart` | `death.game_time - 5` | Capture kill lead-up (stun/disable before death) |
+| `windowEnd` | `death.game_time + 60` | Capture full respawn window of ~30–70 s |
+
+### `context` fields
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `windowStart` / `windowEnd` | number | Inclusive bounds used for the filter |
+| `chainDeaths` | `{game_time, message, snapshot}[]` | Other `hero_death` events in window (self excluded) |
+| `killsNearby` | `{game_time, message, snapshot}[]` | `hero_kill` events in window |
+| `objectivesLost` | `{game_time, message, snapshot}[]` | Objectives with `severity='danger'` OR `objectiveType='roshan'` in window |
+| `objectivesGained` | `{game_time, message, snapshot}[]` | Objectives with `severity='success'` in window |
+| `diedWithBuyback` | `boolean \| null` | See below |
+| `majorObjectiveLost` | `boolean` | `true` if `objectivesLost` contains a `barracks` or `roshan` event |
+
+### `diedWithBuyback` semantics
+
+- **GSI deaths** (`snapshot.source !== 'opendota_import'`): `goldBeforeDeathPenalty >= 200` — a minimum-gold proxy for whether buyback was theoretically affordable. The exact cost (`200 + 3.6% × net_worth`) cannot be computed because `net_worth` is not in the death snapshot.
+- **OD-import deaths** (`snapshot.source === 'opendota_import'`): `null` — no gold data available.
+- **Missing snapshot**: `null`.
+
+### `objectivesLost` / `objectivesGained` split
+
+Uses event `severity`, which is set with the observed player's perspective at event-creation time:
+- `danger` → our structure destroyed → `objectivesLost`
+- `success` → enemy structure destroyed → `objectivesGained`
+- `warning` (Roshan kill) → `objectivesLost` (Roshan killed during the death respawn window is always a major setback regardless of which team did it)
+
+### API
+
+| Method | Route | Effect |
+|--------|-------|--------|
+| `GET` | `/api/history/matches/:matchId/death-digest` | Returns `{ deaths: [...] }`. 404 if match not found; `deaths: []` if no `hero_death` events. |
+
+### Frontend integration (`MatchHistory.jsx`)
+
+`MatchDetail` fetches `/death-digest` in parallel with the main detail request (same `useEffect`). Results are stored in `deathDigest` state and indexed by event `id` into `digestById`. In `renderEventRow`, deaths with a matching digest entry render a "战场上下文" sub-block below the existing death detail. The block is suppressed if the fetch fails or returns no data — fallback is silent.
 
 ---
 
@@ -674,6 +730,7 @@ dota-ai-coach/
 │   ├── openDotaRawService.js          ← Raw cache layer: fetch → raw_opendota_matches table
 │   ├── openDotaEventBuilder.js        ← Pure: buildEventsFromOpenDota() → match_events[]
 │   ├── openDotaKillDeathExtractor.js  ← Pure: extractKillDeath(players, slot) → {kills, deaths, deathStats}
+│   ├── openDotaDeathDigest.js         ← Pure: buildDeathDigest(events) → hero_death[] with .context windows
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -694,8 +751,9 @@ dota-ai-coach/
 │       ├── importPreview.test.js      ← 53 assertions (getHeroName, buildPreview)
 │       ├── importConfirm.test.js          ← 104 assertions (normalizeForMatch, confirmImport + events + deathStats + kill/death + pre_key_item_deaths)
 │       ├── openDotaKeyItemAnalyzer.test.js ← 67 assertions (buildPurchaseMap, analyzeKeyItemTimings + deathTimes, countPreKeyItemDeaths, GSI cross-validation)
-│       ├── openDotaEventBuilder.test.js         ← 110 assertions (isConsumable, buildEventsFromOpenDota, buildKillDeathEvents)
+│       ├── openDotaEventBuilder.test.js         ← 162 assertions (isConsumable, buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents)
 │       ├── openDotaKillDeathExtractor.test.js   ← 60 assertions (heroDisplayNameFromInternal, extractKillDeath)
+│       ├── openDotaDeathDigest.test.js          ← 61 assertions (buildDeathDigest, window, chainDeaths, objectives, diedWithBuyback)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

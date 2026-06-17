@@ -293,6 +293,14 @@ function getMatchById(matchId) {
   return { match, events, keyItemTimings };
 }
 
+// Returns parsed events for a match, or null if the match doesn't exist.
+function getMatchEvents(matchId) {
+  const exists = db.prepare('SELECT 1 FROM matches WHERE match_id = ?').get(matchId);
+  if (!exists) return null;
+  return db.prepare('SELECT * FROM match_events WHERE match_id = ? ORDER BY game_time ASC').all(matchId)
+    .map((e) => ({ ...e, snapshot: e.snapshot_json ? JSON.parse(e.snapshot_json) : null }));
+}
+
 function getLongTermStats(recentCount = 10) {
   const total = db.prepare('SELECT COUNT(*) as n FROM matches WHERE is_excluded = 0').get()?.n || 0;
   if (total === 0) return { total_matches: 0, recent: null, hero_usage: [], top_improvement: null };
@@ -346,7 +354,7 @@ function rawOpendotaMatchExists(matchId) {
 module.exports = {
   saveGameState, saveAlert, getRecentAlerts, getLatestState, getMatchAlerts, getStatesByMatch,
   matchExists, saveMatch, saveMatchEvents, saveKeyItemTimings,
-  getMatches, getMatchById, getLongTermStats,
+  getMatches, getMatchById, getMatchEvents, getLongTermStats,
   excludeMatch, includeMatch, deleteImportedMatch,
   saveRawOpendotaMatch, getRawOpendotaMatch, rawOpendotaMatchExists,
 };

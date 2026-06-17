@@ -87,6 +87,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
   const [detail, setDetail]           = useState(null);
   const [loading, setLoading]         = useState(true);
   const [expandedGroups, setExpandedGroups] = useState(new Set());
+  const [deathDigest, setDeathDigest] = useState(null);
 
   useEffect(() => {
     fetch(`/api/history/matches/${matchId}`)
@@ -94,12 +95,26 @@ function MatchDetail({ matchId, onBack, onDelete }) {
       .then(setDetail)
       .catch(() => setDetail(null))
       .finally(() => setLoading(false));
+
+    // Load death context in parallel; failure is silently ignored
+    fetch(`/api/history/matches/${matchId}/death-digest`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.deaths) setDeathDigest(data.deaths); })
+      .catch(() => {});
   }, [matchId]);
 
   if (loading) return <div style={{ color: '#8b949e', padding: '40px', textAlign: 'center' }}>加载中...</div>;
   if (!detail) return <div style={{ color: '#f85149', padding: '40px', textAlign: 'center' }}>加载失败</div>;
 
   const { match: m, events, keyItemTimings } = detail;
+
+  // Keyed by event id — populated once death-digest fetch succeeds; empty until then
+  const digestById = {};
+  if (deathDigest) {
+    for (const d of deathDigest) {
+      if (d.id != null && d.context) digestById[d.id] = d.context;
+    }
+  }
 
   // For OpenDota imports: how many deaths couldn't be located in any kills_log
   // (tower/creep/Roshan kills have no timestamp entry). Uses match row as source of truth
@@ -129,6 +144,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
 
     const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
     const objSnap = e.type === 'objective' ? (e.snapshot || null) : null;
+    const ctx = e.type === 'hero_death' ? (digestById[e.id] || null) : null;
     // OpenDota import deaths carry only {killer, deathNumber, source} — no gold/items
     const isImportedDeath = snap?.source === 'opendota_import';
 
@@ -185,6 +201,59 @@ function MatchDetail({ matchId, onBack, onDelete }) {
             )}
             {objSnap.executedBy && (
               <span>击杀者 <span style={{ color: '#c9d1d9' }}>{objSnap.executedBy}</span></span>
+            )}
+          </div>
+        )}
+        {/* Battle context — from /death-digest; silently absent until fetch completes or if fetch fails */}
+        {ctx && (ctx.chainDeaths.length > 0 || ctx.killsNearby.length > 0 || ctx.objectivesLost.length > 0 || ctx.objectivesGained.length > 0 || ctx.diedWithBuyback != null) && (
+          <div style={{
+            marginLeft: '46px', marginTop: '4px', padding: '6px 8px',
+            background: '#0d1117',
+            border: `1px solid ${ctx.majorObjectiveLost ? '#f8514933' : '#30363d44'}`,
+            borderRadius: '6px', fontSize: '11px',
+            display: 'flex', flexDirection: 'column', gap: '3px',
+          }}>
+            <div style={{ fontSize: '10px', color: '#8b949e55', marginBottom: '1px' }}>战场上下文</div>
+            {ctx.diedWithBuyback != null && (
+              <div style={{ color: ctx.diedWithBuyback ? '#e3b341' : '#8b949e' }}>
+                {ctx.diedWithBuyback ? '⚠ 死亡时有买活金币' : '死亡时无买活金币'}
+              </div>
+            )}
+            {ctx.chainDeaths.length > 0 && (
+              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ color: '#f85149' }}>连续死亡 ×{ctx.chainDeaths.length}</span>
+                {ctx.chainDeaths.map((d) => (
+                  <span key={d.game_time} style={{ color: '#8b949e88', fontSize: '10px' }}>{formatTime(d.game_time)}</span>
+                ))}
+              </div>
+            )}
+            {ctx.killsNearby.length > 0 && (
+              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ color: '#56d364' }}>前后击杀 ×{ctx.killsNearby.length}</span>
+                {ctx.killsNearby.map((k) => (
+                  <span key={k.game_time} style={{ color: '#8b949e88', fontSize: '10px' }}>{formatTime(k.game_time)}</span>
+                ))}
+              </div>
+            )}
+            {ctx.objectivesLost.length > 0 && (
+              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ color: '#f85149' }}>期间我方失去：</span>
+                {ctx.objectivesLost.map((o) => (
+                  <span key={o.game_time} style={{ color: '#f8514988', fontSize: '10px' }}>
+                    {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
+                  </span>
+                ))}
+              </div>
+            )}
+            {ctx.objectivesGained.length > 0 && (
+              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <span style={{ color: '#56d364' }}>期间摧毁敌方：</span>
+                {ctx.objectivesGained.map((o) => (
+                  <span key={o.game_time} style={{ color: '#56d36488', fontSize: '10px' }}>
+                    {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
+                  </span>
+                ))}
+              </div>
             )}
           </div>
         )}
