@@ -120,12 +120,15 @@ function MatchDetail({ matchId, onBack, onDelete }) {
       warning: '#e3b341', success: '#56d364', info: '#79c0ff',
     }[e.severity] || '#8b949e';
 
-    // hero_kill gets a sword glyph; hero_death a skull — rest use the raw type name
+    // hero_kill gets a sword glyph; hero_death a skull; objective uses emoji keyed on objectiveType
     const typeLabel = e.type === 'hero_kill'  ? '⚔ kill'
                     : e.type === 'hero_death' ? '☠ death'
+                    : e.type === 'objective'  ?
+                        ({ tower: '🏰 tower', barracks: '⚔️ barracks', roshan: '💀 roshan' }[e.snapshot?.objectiveType] || 'objective')
                     : e.type.replace(/_/g, ' ');
 
     const snap = e.type === 'hero_death' ? (e.snapshot || null) : null;
+    const objSnap = e.type === 'objective' ? (e.snapshot || null) : null;
     // OpenDota import deaths carry only {killer, deathNumber, source} — no gold/items
     const isImportedDeath = snap?.source === 'opendota_import';
 
@@ -163,6 +166,26 @@ function MatchDetail({ matchId, onBack, onDelete }) {
             )}
             {snap.hadTpAtDeath === false && <span style={{ color: '#e3b341' }}>无TP</span>}
             {snap.wasNearKeyItem && <span style={{ color: '#f85149' }}>差钱 &lt;600</span>}
+          </div>
+        )}
+        {/* Objective detail — each field individually guarded; missing fields silently skipped */}
+        {objSnap && (
+          <div style={{ marginLeft: '46px', marginTop: '3px', fontSize: '11px', color: '#8b949e66', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            {objSnap.team && (
+              <span>阵营 <span style={{ color: '#c9d1d9' }}>{objSnap.team === 'radiant' ? '天辉' : '夜魇'}</span></span>
+            )}
+            {objSnap.lane && (
+              <span>路线 <span style={{ color: '#c9d1d9' }}>{{ top: '上路', mid: '中路', bot: '下路' }[objSnap.lane] || objSnap.lane}</span></span>
+            )}
+            {objSnap.objectiveType === 'tower' && objSnap.tier != null && (
+              <span>等级 <span style={{ color: '#c9d1d9' }}>T{objSnap.tier}</span></span>
+            )}
+            {objSnap.objectiveType === 'barracks' && objSnap.barrackType && (
+              <span>类型 <span style={{ color: '#c9d1d9' }}>{objSnap.barrackType === 'melee' ? '近战' : '远程'}</span></span>
+            )}
+            {objSnap.executedBy && (
+              <span>击杀者 <span style={{ color: '#c9d1d9' }}>{objSnap.executedBy}</span></span>
+            )}
           </div>
         )}
       </div>
