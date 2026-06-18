@@ -67,7 +67,8 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaKeyItemAnalyzer.js` | Pure: `analyzeKeyItemTimings(matchId, player, profile)` — extracts timings from `purchase_log` |
 | `server/openDotaEventBuilder.js` | Pure: `buildEventsFromOpenDota(player, profile, matchInfo)` — builds `match_events` array from `purchase_log` |
 | `server/openDotaKillDeathExtractor.js` | Pure: `extractKillDeath(players, selectedPlayerSlot)` — extracts kill/death timeline from OpenDota `kills_log` |
-| `server/openDotaDeathDigest.js` | Pure: `buildDeathDigest(events)` — annotates each `hero_death` with a ±5s/+60s battlefield context window |
+| `server/openDotaDeathDigest.js` | Pure: `buildDeathDigest(events, timeseries?)` — annotates each `hero_death` with a ±5s/+60s battlefield context window and optional economy delta |
+| `server/openDotaEconomyTimeseries.js` | Pure: `buildEconomyTimeseries(raw, playerSlot)` → player-perspective minute-granularity economy/XP timeseries; `economyDeltaAroundDeath(ts, gameTime)` → per-death delta |
 
 ---
 
@@ -359,11 +360,12 @@ server/tests/
   openDotaEventBuilder.test.js        162 assertions — isConsumable, buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents (all cases, cross-validation)
   openDotaKillDeathExtractor.test.js   60 assertions — heroDisplayNameFromInternal, extractKillDeath (all cases)
   openDotaDeathDigest.test.js          61 assertions — buildDeathDigest (window boundaries, chainDeaths, killsNearby, objectivesLost/Gained, majorObjectiveLost, diedWithBuyback, slim shape)
+  openDotaEconomyTimeseries.test.js    86 assertions — buildEconomyTimeseries (radiant/dire sign flip, null/missing data, xp), economyDeltaAroundDeath (minuteAtDeath, delta, out-of-range, dual-threshold significant), digest integration (context.economy present, degradation)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 753 assertions must pass before merging any change.
+All 839 assertions must pass before merging any change.
 
 ---
 
@@ -667,6 +669,29 @@ Returns: array containing only `hero_death` entries, each extended with a `.cont
 | `objectivesGained` | `{game_time, message, snapshot}[]` | Objectives with `severity='success'` in window |
 | `diedWithBuyback` | `boolean \| null` | See below |
 | `majorObjectiveLost` | `boolean` | `true` if `objectivesLost` contains a `barracks` or `roshan` event |
+| `economy` | object | Economy delta around the death — see below |
+
+### `context.economy` fields
+
+Sourced from `openDotaEconomyTimeseries.js`. Only populated when the match has `radiant_gold_adv` in the raw cache (i.e. OpenDota-parsed imports). Always present as a field; `available: false` when data is absent.
+
+**PRECISION LIMIT:** `radiant_gold_adv` / `radiant_xp_adv` are **minute-granularity** arrays. A death at e.g. t=754s lands at minute 12; "the next minute" is minute 13. The delta is `gold[13] − gold[12]` — one data-point gap. No interpolation. This is a fixed data-source constraint; results are labelled `≈ 分钟级` in the UI.
+
+Economy curves are **never stored in the database** — computed on-demand from `raw_opendota_matches` cache each time the death-digest or economy-timeseries endpoint is called.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `available` | boolean | `false` when timeseries not passed or `radiant_gold_adv` is null |
+| `minuteAtDeath` | number \| null | `Math.floor(game_time / 60)` |
+| `advBefore` | number \| null | Economy advantage (our perspective) at `minuteAtDeath` |
+| `advAfter` | number \| null | Economy advantage at `minuteAtDeath + 1`; null if that minute doesn't exist |
+| `delta` | number \| null | `advAfter − advBefore`; negative = deterioration |
+| `significant` | boolean | Absolute (`\|delta\| > 1000g`) OR relative (`\|delta\| > 20% of \|advBefore\|`, skipped when `\|advBefore\| < 500g`) |
+
+**Threshold constants** (in `openDotaEconomyTimeseries.js`):
+- `ABS_THRESHOLD = 1000` — absolute gold delta
+- `REL_THRESHOLD = 0.20` — 20% relative change
+- `BASELINE_MIN = 500` — minimum `|advBefore|` to apply relative threshold
 
 ### `diedWithBuyback` semantics
 
@@ -685,7 +710,8 @@ Uses event `severity`, which is set with the observed player's perspective at ev
 
 | Method | Route | Effect |
 |--------|-------|--------|
-| `GET` | `/api/history/matches/:matchId/death-digest` | Returns `{ deaths: [...] }`. 404 if match not found; `deaths: []` if no `hero_death` events. |
+| `GET` | `/api/history/matches/:matchId/death-digest` | Returns `{ deaths: [...] }`. Each death includes `context.economy` when `radiant_gold_adv` is in cache. 404 if match not found; `deaths: []` if no `hero_death` events. |
+| `GET` | `/api/history/matches/:matchId/economy-timeseries` | Returns `buildEconomyTimeseries` output for the match's player slot. 200 `{ available: false }` if match is GSI-only or cache is missing. 404 if match not found. |
 
 ### Frontend integration (`MatchHistory.jsx`)
 
@@ -730,7 +756,8 @@ dota-ai-coach/
 │   ├── openDotaRawService.js          ← Raw cache layer: fetch → raw_opendota_matches table
 │   ├── openDotaEventBuilder.js        ← Pure: buildEventsFromOpenDota() → match_events[]
 │   ├── openDotaKillDeathExtractor.js  ← Pure: extractKillDeath(players, slot) → {kills, deaths, deathStats}
-│   ├── openDotaDeathDigest.js         ← Pure: buildDeathDigest(events) → hero_death[] with .context windows
+│   ├── openDotaDeathDigest.js         ← Pure: buildDeathDigest(events, timeseries?) → hero_death[] with .context windows + economy delta
+│   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -754,6 +781,7 @@ dota-ai-coach/
 │       ├── openDotaEventBuilder.test.js         ← 162 assertions (isConsumable, buildEventsFromOpenDota, buildKillDeathEvents, buildObjectiveEvents)
 │       ├── openDotaKillDeathExtractor.test.js   ← 60 assertions (heroDisplayNameFromInternal, extractKillDeath)
 │       ├── openDotaDeathDigest.test.js          ← 61 assertions (buildDeathDigest, window, chainDeaths, objectives, diedWithBuyback)
+│       ├── openDotaEconomyTimeseries.test.js    ← 86 assertions (buildEconomyTimeseries, economyDeltaAroundDeath, digest integration)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

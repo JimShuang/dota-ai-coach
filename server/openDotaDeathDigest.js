@@ -1,10 +1,13 @@
 'use strict';
 
 // Annotates each hero_death event with battlefield context: other kills, chain deaths,
-// and objective events that happened within ±5s/+60s of the death.
+// objective events within ±5s/+60s of the death, and economy delta from the
+// minute-granularity timeseries (when available).
 //
 // Pure function — no DB reads, no network. Input must be sorted by game_time ASC.
-// Wire-in: server/index.js calls this with events from getMatchEvents().
+// Wire-in: server/index.js calls this with events + optional economy timeseries.
+
+const { economyDeltaAroundDeath } = require('./openDotaEconomyTimeseries');
 
 const WINDOW_BEFORE = 5;   // seconds before death (capture kill lead-up)
 const WINDOW_AFTER  = 60;  // seconds after death  (capture respawn window)
@@ -33,10 +36,13 @@ function computeDiedWithBuyback(e) {
 /**
  * Annotate each hero_death event with a context window of nearby events.
  *
- * @param {object[]} events  Full match_events array, sorted game_time ASC.
- * @returns {object[]}       Only the hero_death entries, each extended with .context.
+ * @param {object[]} events            Full match_events array, sorted game_time ASC.
+ * @param {object|null} [timeseries]   Optional output of buildEconomyTimeseries().
+ *                                     When provided, context.economy carries delta data.
+ *                                     When null/absent, context.economy.available === false.
+ * @returns {object[]}                 Only the hero_death entries, each extended with .context.
  */
-function buildDeathDigest(events) {
+function buildDeathDigest(events, timeseries = null) {
   if (!Array.isArray(events) || events.length === 0) return [];
 
   const deaths = events.filter((e) => e.type === 'hero_death');
@@ -89,6 +95,7 @@ function buildDeathDigest(events) {
         objectivesGained,
         diedWithBuyback:    computeDiedWithBuyback(death),
         majorObjectiveLost,
+        economy:            economyDeltaAroundDeath(timeseries, death.game_time),
       },
     };
   });

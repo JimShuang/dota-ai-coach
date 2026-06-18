@@ -3,10 +3,11 @@ const cors = require('cors');
 const {
   saveGameState, saveAlert,
   getRecentAlerts, getLatestState, getStatesByMatch,
-  getMatches, getMatchById, getMatchEvents, getLongTermStats,
+  getMatches, getMatchById, getLongTermStats,
   excludeMatch, includeMatch, deleteImportedMatch,
 } = require('./db');
 const { buildDeathDigest } = require('./openDotaDeathDigest');
+const { buildEconomyTimeseries } = require('./openDotaEconomyTimeseries');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -235,9 +236,37 @@ app.get('/api/history/matches/:matchId', (req, res) => {
 });
 
 app.get('/api/history/matches/:matchId/death-digest', (req, res) => {
-  const events = getMatchEvents(req.params.matchId);
-  if (events === null) return res.status(404).json({ error: 'Match not found' });
-  res.json({ deaths: buildDeathDigest(events) });
+  const detail = getMatchById(req.params.matchId);
+  if (detail === null) return res.status(404).json({ error: 'Match not found' });
+
+  // Economy timeseries from raw cache (OpenDota imports that have radiant_gold_adv)
+  let timeseries = null;
+  const m = detail.match;
+  if (m.import_match_id && m.player_slot != null) {
+    try {
+      const cached = getCached(m.import_match_id);
+      if (cached?.raw_json) {
+        timeseries = buildEconomyTimeseries(cached.raw_json, m.player_slot);
+      }
+    } catch (_) { /* cache miss or parse error — degrade gracefully */ }
+  }
+
+  res.json({ deaths: buildDeathDigest(detail.events, timeseries) });
+});
+
+app.get('/api/history/matches/:matchId/economy-timeseries', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+  const m = detail.match;
+  if (!m.import_match_id || m.player_slot == null) {
+    return res.json({ available: false });
+  }
+
+  const cached = getCached(m.import_match_id);
+  if (!cached?.raw_json) return res.json({ available: false });
+
+  res.json(buildEconomyTimeseries(cached.raw_json, m.player_slot));
 });
 
 app.get('/api/history/stats', (req, res) => {

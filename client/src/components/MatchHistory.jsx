@@ -83,11 +83,88 @@ function groupEventsForDisplay(evts) {
 
 // ── Match detail view ──────────────────────────────────────────────────────
 
+// ── Economy chart ──────────────────────────────────────────────────────────
+
+function EconomyChart({ timeseries, events }) {
+  if (!timeseries?.available || !timeseries.gold?.length) {
+    return (
+      <div style={{
+        background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px',
+        textAlign: 'center', fontSize: '12px', color: '#8b949e',
+      }}>
+        该比赛无解析经济差数据
+      </div>
+    );
+  }
+
+  const data    = timeseries.gold;
+  const maxMin  = data[data.length - 1].minute;
+  const advVals = data.map((d) => d.adv);
+  const peak    = Math.max(Math.max(...advVals), Math.abs(Math.min(...advVals)), 1000);
+
+  const W = 560, H = 110, PL = 38, PR = 8, PT = 12, PB = 22;
+  const cW = W - PL - PR;
+  const cH = H - PT - PB;
+
+  const xOf = (min) => PL + (maxMin > 0 ? (min / maxMin) * cW : 0);
+  const yOf = (adv) => PT + cH / 2 - (adv / peak) * (cH / 2);
+  const zerY = yOf(0);
+
+  // Filled area: split path above / below zero line
+  const pts = data.map((d) => [xOf(d.minute), yOf(d.adv)]);
+  const polyPts = pts.map(([x, y]) => `${x},${y}`).join(' ');
+
+  const deathMins = (events || [])
+    .filter((e) => e.type === 'hero_death')
+    .map((e) => Math.floor(e.game_time / 60))
+    .filter((m) => m <= maxMin);
+
+  const tickMins = [];
+  const step = maxMin > 40 ? 10 : 5;
+  for (let m = 0; m <= maxMin; m += step) tickMins.push(m);
+
+  return (
+    <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px' }}>
+      <div style={{ fontSize: '12px', color: '#8b949e', fontWeight: '600', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        我方经济差走势
+        <span style={{ fontSize: '10px', color: '#8b949e55', fontWeight: '400' }}>分钟粒度 · 红线=死亡时间</span>
+      </div>
+      <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{ display: 'block' }}>
+        {/* Zero line */}
+        <line x1={PL} y1={zerY} x2={W - PR} y2={zerY} stroke="#30363d" strokeWidth="1" />
+        {/* Thin horizontal grid at ±peak/2 */}
+        <line x1={PL} y1={yOf(peak / 2)}  x2={W - PR} y2={yOf(peak / 2)}  stroke="#30363d33" strokeWidth="1" strokeDasharray="4,4" />
+        <line x1={PL} y1={yOf(-peak / 2)} x2={W - PR} y2={yOf(-peak / 2)} stroke="#30363d33" strokeWidth="1" strokeDasharray="4,4" />
+        {/* Death markers (behind the line) */}
+        {deathMins.map((m, i) => (
+          <line key={i} x1={xOf(m)} y1={PT} x2={xOf(m)} y2={H - PB} stroke="#f85149" strokeWidth="1" strokeDasharray="3,2" opacity="0.55" />
+        ))}
+        {/* Economy polyline */}
+        <polyline points={polyPts} fill="none" stroke="#e3b341" strokeWidth="1.5" strokeLinejoin="round" />
+        {/* Y axis labels */}
+        <text x={PL - 4} y={yOf(peak)}  fill="#56d364" fontSize="9" textAnchor="end" dominantBaseline="middle">+{(peak / 1000).toFixed(0)}k</text>
+        <text x={PL - 4} y={zerY}       fill="#8b949e" fontSize="9" textAnchor="end" dominantBaseline="middle">0</text>
+        <text x={PL - 4} y={yOf(-peak)} fill="#f85149" fontSize="9" textAnchor="end" dominantBaseline="middle">-{(peak / 1000).toFixed(0)}k</text>
+        {/* X axis ticks */}
+        {tickMins.map((m) => (
+          <g key={m}>
+            <line x1={xOf(m)} y1={H - PB} x2={xOf(m)} y2={H - PB + 3} stroke="#30363d" strokeWidth="1" />
+            <text x={xOf(m)} y={H - PB + 11} fill="#8b949e" fontSize="9" textAnchor="middle">{m}</text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+// ── Match detail view ──────────────────────────────────────────────────────
+
 function MatchDetail({ matchId, onBack, onDelete }) {
-  const [detail, setDetail]           = useState(null);
-  const [loading, setLoading]         = useState(true);
+  const [detail, setDetail]               = useState(null);
+  const [loading, setLoading]             = useState(true);
   const [expandedGroups, setExpandedGroups] = useState(new Set());
-  const [deathDigest, setDeathDigest] = useState(null);
+  const [deathDigest, setDeathDigest]     = useState(null);
+  const [economyTs, setEconomyTs]         = useState(null);
 
   useEffect(() => {
     fetch(`/api/history/matches/${matchId}`)
@@ -96,10 +173,15 @@ function MatchDetail({ matchId, onBack, onDelete }) {
       .catch(() => setDetail(null))
       .finally(() => setLoading(false));
 
-    // Load death context in parallel; failure is silently ignored
+    // Load death context + economy timeseries in parallel; failures are silently ignored
     fetch(`/api/history/matches/${matchId}/death-digest`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => { if (data?.deaths) setDeathDigest(data.deaths); })
+      .catch(() => {});
+
+    fetch(`/api/history/matches/${matchId}/economy-timeseries`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.available) setEconomyTs(data); })
       .catch(() => {});
   }, [matchId]);
 
@@ -205,7 +287,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
           </div>
         )}
         {/* Battle context — from /death-digest; silently absent until fetch completes or if fetch fails */}
-        {ctx && (ctx.chainDeaths.length > 0 || ctx.killsNearby.length > 0 || ctx.objectivesLost.length > 0 || ctx.objectivesGained.length > 0 || ctx.diedWithBuyback != null) && (
+        {ctx && (ctx.chainDeaths.length > 0 || ctx.killsNearby.length > 0 || ctx.objectivesLost.length > 0 || ctx.objectivesGained.length > 0 || ctx.diedWithBuyback != null || (ctx.economy?.available && ctx.economy.delta != null)) && (
           <div style={{
             marginLeft: '46px', marginTop: '4px', padding: '6px 8px',
             background: '#0d1117',
@@ -253,6 +335,18 @@ function MatchDetail({ matchId, onBack, onDelete }) {
                     {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
                   </span>
                 ))}
+              </div>
+            )}
+            {ctx.economy?.available && ctx.economy.delta != null && (
+              <div style={{
+                color:      ctx.economy.delta < 0 ? '#f85149' : '#56d364',
+                fontWeight: ctx.economy.significant ? '700' : '400',
+              }}>
+                {ctx.economy.delta < 0 ? '死亡后1分钟经济差恶化 ' : '死亡后1分钟经济差改善 '}
+                {Math.abs(ctx.economy.delta).toLocaleString()}g
+                {ctx.economy.significant && (
+                  <span style={{ fontSize: '10px', color: '#8b949e', fontWeight: '400', marginLeft: '4px' }}>≈ 分钟级</span>
+                )}
               </div>
             )}
           </div>
@@ -380,6 +474,9 @@ function MatchDetail({ matchId, onBack, onDelete }) {
           </table>
         </div>
       ) : null}
+
+      {/* Economy timeseries chart */}
+      <EconomyChart timeseries={economyTs} events={events} />
 
       {/* One thing to improve */}
       {m.one_thing_to_improve && (
