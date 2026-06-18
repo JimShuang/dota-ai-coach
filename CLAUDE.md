@@ -69,6 +69,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaKillDeathExtractor.js` | Pure: `extractKillDeath(players, selectedPlayerSlot)` — extracts kill/death timeline from OpenDota `kills_log` |
 | `server/openDotaDeathDigest.js` | Pure: `buildDeathDigest(events, timeseries?)` — annotates each `hero_death` with a ±5s/+60s battlefield context window and optional economy delta |
 | `server/openDotaEconomyTimeseries.js` | Pure: `buildEconomyTimeseries(raw, playerSlot)` → player-perspective minute-granularity economy/XP timeseries; `economyDeltaAroundDeath(ts, gameTime)` → per-death delta |
+| `server/openDotaMomentumScanner.js` | Pure: `scanMomentumShifts(timeseries)` — independent anchor scanner, no imports from event/death/digest modules |
 
 ---
 
@@ -361,11 +362,12 @@ server/tests/
   openDotaKillDeathExtractor.test.js   60 assertions — heroDisplayNameFromInternal, extractKillDeath (all cases)
   openDotaDeathDigest.test.js          61 assertions — buildDeathDigest (window boundaries, chainDeaths, killsNearby, objectivesLost/Gained, majorObjectiveLost, diedWithBuyback, slim shape)
   openDotaEconomyTimeseries.test.js    86 assertions — buildEconomyTimeseries (radiant/dire sign flip, null/missing data, xp), economyDeltaAroundDeath (minuteAtDeath, delta, out-of-range, dual-threshold significant), digest integration (context.economy present, degradation)
+  openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 839 assertions must pass before merging any change.
+All 902 assertions must pass before merging any change.
 
 ---
 
@@ -719,6 +721,52 @@ Uses event `severity`, which is set with the observed player's perspective at ev
 
 ---
 
+## Momentum Shift Anchors
+
+Second class of match-analysis anchors, parallel to Death Digest (first class).
+Implemented in `server/openDotaMomentumScanner.js`.
+
+### Design principles
+
+- **Fully decoupled from events / deaths / digest.** Takes only a `timeseries` object (output of `buildEconomyTimeseries`) as input; does not import any event, death, or digest module. Future integration into a logical chain is a separate task.
+- **Minute-granularity precision** (same data-source constraint as the economy timeseries). A shift reported at minute N means the new trend direction begins there.
+- **Not persisted** — computed on demand from cached data, same as economy timeseries.
+
+### `scanMomentumShifts(timeseries) → anchors[]`
+
+Returns anchors sorted by `minute` ASC. Each anchor:
+
+```js
+{
+  minute,         // first minute of the new trend direction
+  type,           // 'momentum_gain' | 'momentum_loss' (player perspective)
+  slopeBefore,    // avg gold/min over the before-window (positive = our lead growing)
+  slopeAfter,     // avg gold/min over the after-window
+  magnitude,      // Math.abs(slopeAfter - slopeBefore)
+  advAtShift,     // gold[minute].adv — economy gap at the shift point
+}
+```
+
+### Algorithm (noise suppression)
+
+For each candidate reversal at slope index `i` (where `i ≥ MIN_TREND_MINUTES` and `i ≤ slopes.length − MIN_TREND_MINUTES`):
+1. `beforeSlopes` = `slopes[i−N..i−1]`, `afterSlopes` = `slopes[i..i+N−1]`
+2. Compute windowed averages (`avgBefore`, `avgAfter`) — more stable than single-point slopes.
+3. Both averages must be **outside FLAT_BAND** (clear direction) and **opposite sign** (true reversal).
+4. `magnitude = |avgAfter − avgBefore| > MIN_SLOPE_CHANGE` (magnitude filter).
+5. Every individual slope in the after-window must match `avgAfter`'s direction (persistence filter — rejects single-minute spikes).
+6. Same consistency check on the before-window.
+
+### Threshold constants (`openDotaMomentumScanner.js`)
+
+| Constant | Default | Meaning |
+|----------|---------|---------|
+| `MIN_SLOPE_CHANGE` | 400 g/min | Min absolute slope change to be a real shift |
+| `MIN_TREND_MINUTES` | 2 | Window size on each side of candidate reversal |
+| `FLAT_BAND` | ±100 g/min | Slopes within this band are directionally neutral |
+
+---
+
 ## Future roadmap
 
 ### Near-term
@@ -758,6 +806,7 @@ dota-ai-coach/
 │   ├── openDotaKillDeathExtractor.js  ← Pure: extractKillDeath(players, slot) → {kills, deaths, deathStats}
 │   ├── openDotaDeathDigest.js         ← Pure: buildDeathDigest(events, timeseries?) → hero_death[] with .context windows + economy delta
 │   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
+│   ├── openDotaMomentumScanner.js     ← Pure: scanMomentumShifts(timeseries) — decoupled anchor scanner
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -782,6 +831,7 @@ dota-ai-coach/
 │       ├── openDotaKillDeathExtractor.test.js   ← 60 assertions (heroDisplayNameFromInternal, extractKillDeath)
 │       ├── openDotaDeathDigest.test.js          ← 61 assertions (buildDeathDigest, window, chainDeaths, objectives, diedWithBuyback)
 │       ├── openDotaEconomyTimeseries.test.js    ← 86 assertions (buildEconomyTimeseries, economyDeltaAroundDeath, digest integration)
+│       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)
