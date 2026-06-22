@@ -72,6 +72,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaMomentumScanner.js` | Pure: `scanMomentumShifts(timeseries)` — independent anchor scanner, no imports from event/death/digest modules |
 | `server/data/genericPowerSpikeItems.js` | 6-bucket universal power-spike item list for enemy comparison (distinct from hero-specific `offlaneHeroProfiles.js` keyItems) |
 | `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas, decoupled from event/death/digest/timeseries/momentum modules |
+| `server/anchorChain.js` | Pure convergence layer: maps the three anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
 
 ---
 
@@ -366,11 +367,12 @@ server/tests/
   openDotaEconomyTimeseries.test.js    86 assertions — buildEconomyTimeseries (radiant/dire sign flip, null/missing data, xp), economyDeltaAroundDeath (minuteAtDeath, delta, out-of-range, dual-threshold significant), digest integration (context.economy present, degradation)
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
   openDotaSpikeWindowScanner.test.js   72 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket/only-enemy-bucket, multi-item earliest-time, significant threshold, sort order, anchor shape, dire slot, profile hero display name
+  anchorChain.test.js                  93 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 974 assertions must pass before merging any change.
+All 1067 assertions must pass before merging any change.
 
 ---
 
@@ -722,6 +724,8 @@ Uses event `severity`, which is set with the observed player's perspective at ev
 
 `MatchDetail` fetches `/death-digest` in parallel with the main detail request (same `useEffect`). Results are stored in `deathDigest` state and indexed by event `id` into `digestById`. In `renderEventRow`, deaths with a matching digest entry render a "战场上下文" sub-block below the existing death detail. The block is suppressed if the fetch fails or returns no data — fallback is silent.
 
+Death digest entries are mapped to unified Anchors by `deathToAnchor()` in `anchorChain.js` — see **Anchor Chain** section.
+
 ---
 
 ## Momentum Shift Anchors
@@ -767,6 +771,8 @@ For each candidate reversal at slope index `i` (where `i ≥ MIN_TREND_MINUTES` 
 | `MIN_SLOPE_CHANGE` | 400 g/min | Min absolute slope change to be a real shift |
 | `MIN_TREND_MINUTES` | 2 | Window size on each side of candidate reversal |
 | `FLAT_BAND` | ±100 g/min | Slopes within this band are directionally neutral |
+
+Momentum shifts are mapped to unified Anchors by `momentumToAnchor()` in `anchorChain.js` — see **Anchor Chain** section.
 
 ---
 
@@ -825,6 +831,63 @@ For each bucket, compares the **earliest completion time** by the selected playe
 |----------|---------|---------|
 | `SIGNIFICANT_GAP_SECONDS` | 120 s | `|delta|` must exceed this to be flagged significant |
 
+Spike deltas are mapped to unified Anchors by `spikeToAnchor()` in `anchorChain.js` — see **Anchor Chain** section.
+
+---
+
+## Anchor Chain
+
+Convergence layer implemented in `server/anchorChain.js`. Receives the outputs of the three scanner functions as parameters and maps them to a uniform `Anchor` shape, then merges them into a single time-ordered array. Does not import any scanner module — fully decoupled.
+
+The scanners are invoked by the endpoint in `server/index.js`, which passes their outputs to `buildAnchorChain()`.
+
+### Unified Anchor shape
+
+```js
+{
+  gameTime,   // number, seconds — primary sort key
+  minute,     // number — Math.floor(gameTime / 60), auxiliary display
+  kind,       // 'death' | 'momentum' | 'spike'
+  type,       // original scanner type value (e.g. 'hero_death', 'momentum_loss', 'spike_deficit')
+  severity,   // 'critical' | 'danger' | 'warning' | 'info' | 'success'
+  summary,    // one-line Chinese human-readable description
+  detail,     // original scanner object, kept verbatim for renderer use
+}
+```
+
+### Severity mapping per kind
+
+| kind | type | severity |
+|------|------|----------|
+| `death` | any | passthrough from the event row's own `severity` |
+| `momentum` | `momentum_loss` | `warning` |
+| `momentum` | `momentum_gain` | `success` |
+| `spike` | `spike_deficit` + `significant: true` | `warning` |
+| `spike` | `spike_deficit` + `significant: false` | `info` |
+| `spike` | `spike_lead` | `success` |
+
+### Time unit decision
+
+`gameTime` is always **seconds** (the primary sort key). `minute` is a floored integer for display. Momentum shift anchors are produced at minute granularity — `gameTime = minute * 60` is an approximation; the actual shift happened somewhere within that minute.
+
+### Tie-break rule (same gameTime)
+
+`death (0) > spike (1) > momentum (2)` — "something happened" events rank before "state-change" events, which rank before "trend analysis" events. Documented in `KIND_PRIORITY` constant in `anchorChain.js`.
+
+### Time format (`fmtTime`)
+
+Negative `gameTime` (pre-creep-spawn) renders as `-mm:ss` (not clamped to `00:00`) so early-game events remain distinguishable.
+
+### API
+
+| Method | Route | Effect |
+|--------|-------|--------|
+| `GET` | `/api/history/matches/:matchId/anchor-chain` | Returns `{ anchors: [...] }`. Each anchor follows the shape above. 404 if match not found. Non-parsed or cache-miss input degrades each scanner to `[]` — returns partial or empty anchor list, never an error. |
+
+Death anchors reference Death Digest — see **Death Digest feature** section.
+Momentum anchors reference the scanner — see **Momentum Shift Anchors** section.
+Spike anchors reference the scanner — see **Spike Window Delta Anchors** section.
+
 ---
 
 ## Future roadmap
@@ -867,6 +930,7 @@ dota-ai-coach/
 │   ├── openDotaDeathDigest.js         ← Pure: buildDeathDigest(events, timeseries?) → hero_death[] with .context windows + economy delta
 │   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
 │   ├── openDotaMomentumScanner.js     ← Pure: scanMomentumShifts(timeseries) — decoupled anchor scanner
+│   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor + buildAnchorChain()
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -893,6 +957,7 @@ dota-ai-coach/
 │       ├── openDotaEconomyTimeseries.test.js    ← 86 assertions (buildEconomyTimeseries, economyDeltaAroundDeath, digest integration)
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
 │       ├── openDotaSpikeWindowScanner.test.js   ← 72 assertions (decoupling, spike_lead/deficit, fastest enemy, sort, significant)
+│       ├── anchorChain.test.js                  ← 93 assertions (decoupling, all mappers, merge sort, tie-break, shape)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

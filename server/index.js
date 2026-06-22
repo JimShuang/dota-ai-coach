@@ -8,6 +8,9 @@ const {
 } = require('./db');
 const { buildDeathDigest } = require('./openDotaDeathDigest');
 const { buildEconomyTimeseries } = require('./openDotaEconomyTimeseries');
+const { scanMomentumShifts } = require('./openDotaMomentumScanner');
+const { scanSpikeWindowDeltas } = require('./openDotaSpikeWindowScanner');
+const { buildAnchorChain } = require('./anchorChain');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -267,6 +270,31 @@ app.get('/api/history/matches/:matchId/economy-timeseries', (req, res) => {
   if (!cached?.raw_json) return res.json({ available: false });
 
   res.json(buildEconomyTimeseries(cached.raw_json, m.player_slot));
+});
+
+app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+  const m = detail.match;
+  let timeseries = null;
+  let players    = [];
+
+  if (m.import_match_id && m.player_slot != null) {
+    try {
+      const cached = getCached(m.import_match_id);
+      if (cached?.raw_json) {
+        timeseries = buildEconomyTimeseries(cached.raw_json, m.player_slot);
+        players    = cached.raw_json.players || [];
+      }
+    } catch (_) { /* cache miss or parse error — degrade gracefully to empty arrays */ }
+  }
+
+  const deaths         = buildDeathDigest(detail.events, timeseries);
+  const momentumShifts = scanMomentumShifts(timeseries);
+  const spikeDeltas    = scanSpikeWindowDeltas(players, m.player_slot);
+
+  res.json({ anchors: buildAnchorChain({ deaths, momentumShifts, spikeDeltas }) });
 });
 
 app.get('/api/history/stats', (req, res) => {
