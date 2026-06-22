@@ -70,6 +70,8 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaDeathDigest.js` | Pure: `buildDeathDigest(events, timeseries?)` — annotates each `hero_death` with a ±5s/+60s battlefield context window and optional economy delta |
 | `server/openDotaEconomyTimeseries.js` | Pure: `buildEconomyTimeseries(raw, playerSlot)` → player-perspective minute-granularity economy/XP timeseries; `economyDeltaAroundDeath(ts, gameTime)` → per-death delta |
 | `server/openDotaMomentumScanner.js` | Pure: `scanMomentumShifts(timeseries)` — independent anchor scanner, no imports from event/death/digest modules |
+| `server/data/genericPowerSpikeItems.js` | 6-bucket universal power-spike item list for enemy comparison (distinct from hero-specific `offlaneHeroProfiles.js` keyItems) |
+| `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas, decoupled from event/death/digest/timeseries/momentum modules |
 
 ---
 
@@ -363,11 +365,12 @@ server/tests/
   openDotaDeathDigest.test.js          61 assertions — buildDeathDigest (window boundaries, chainDeaths, killsNearby, objectivesLost/Gained, majorObjectiveLost, diedWithBuyback, slim shape)
   openDotaEconomyTimeseries.test.js    86 assertions — buildEconomyTimeseries (radiant/dire sign flip, null/missing data, xp), economyDeltaAroundDeath (minuteAtDeath, delta, out-of-range, dual-threshold significant), digest integration (context.economy present, degradation)
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
+  openDotaSpikeWindowScanner.test.js   72 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket/only-enemy-bucket, multi-item earliest-time, significant threshold, sort order, anchor shape, dire slot, profile hero display name
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 902 assertions must pass before merging any change.
+All 974 assertions must pass before merging any change.
 
 ---
 
@@ -767,6 +770,63 @@ For each candidate reversal at slope index `i` (where `i ≥ MIN_TREND_MINUTES` 
 
 ---
 
+## Spike Window Delta Anchors
+
+Third class of match-analysis anchors, parallel to Death Digest and Momentum Shifts.
+Implemented in `server/openDotaSpikeWindowScanner.js`.
+
+### Design principles
+
+- **Fully decoupled** from event / death / digest / timeseries / momentum modules. Takes only `players[]` and `selectedPlayerSlot`; does not import any other anchor module.
+- **Generic items, not profile-specific.** `server/data/genericPowerSpikeItems.js` defines 6 universal ability buckets applicable to any hero. These are intentionally separate from `offlaneHeroProfiles.js` keyItems, which are player-hero-specific progression routes. Enemy heroes have no profile, so this generic list is used for them.
+- **Second-granularity** from `purchase_log` timestamps (same source as `openDotaEventBuilder`).
+- **Not persisted** — computed on demand from the `players[]` array already in the raw cache.
+
+### Ability buckets (`genericPowerSpikeItems.js`)
+
+| Bucket | Items |
+|--------|-------|
+| `initiation` | blink, invis_sword, blade_mail |
+| `survivability` | black_king_bar, pipe, eternal_shroud, guardian_greaves, crimson_guard, mekansm, shivas_guard, consecrated_wraps† |
+| `farming` | radiance, manta, bfury, maelstrom, specialists_array† |
+| `damage` | desolator, aghanims_scepter, assault, monkey_king_bar, nullifier |
+| `control` | rod_of_atos, sheepstick, orchid, gleipnir, abyssal_blade |
+| `support` | force_staff, glimmer_cape, lotus_orb, solar_crest |
+
+† 7.41 new items — marked `// unverified` in source; no real parsed match in cache confirms key spelling. If wrong, update `genericPowerSpikeItems.js` when a real match is available.
+
+### `scanSpikeWindowDeltas(players, selectedPlayerSlot) → anchors[]`
+
+For each bucket, compares the **earliest completion time** by the selected player against the **earliest completion time among the five enemies**. At most one anchor per bucket; sorted by `|delta|` descending (largest gap first).
+
+```js
+{
+  bucket,       // 'survivability' | 'initiation' | 'farming' | 'damage' | 'control' | 'support'
+  myItem,       // first item in bucket purchased by the player
+  myTime,       // purchase_log time in seconds
+  enemyHero,    // display name of the fastest enemy (profile heroes 中文（English）, others English)
+  enemyItem,    // first item in bucket purchased by that enemy
+  enemyTime,
+  delta,        // myTime − enemyTime (positive = deficit, negative = lead)
+  type,         // 'spike_deficit' (delta > 0) | 'spike_lead' (delta < 0)
+  significant,  // Math.abs(delta) > SIGNIFICANT_GAP_SECONDS (default 120 s)
+}
+```
+
+### Boundary conditions
+
+- Bucket absent for **either** side → no anchor for that bucket (no guessing, no zero-fill)
+- `purchase_log` missing or empty → `[]`
+- Tie among enemies → any one of the co-earliest qualifies (order undefined for ties)
+
+### Threshold constant (`openDotaSpikeWindowScanner.js`)
+
+| Constant | Default | Meaning |
+|----------|---------|---------|
+| `SIGNIFICANT_GAP_SECONDS` | 120 s | `|delta|` must exceed this to be flagged significant |
+
+---
+
 ## Future roadmap
 
 ### Near-term
@@ -832,6 +892,7 @@ dota-ai-coach/
 │       ├── openDotaDeathDigest.test.js          ← 61 assertions (buildDeathDigest, window, chainDeaths, objectives, diedWithBuyback)
 │       ├── openDotaEconomyTimeseries.test.js    ← 86 assertions (buildEconomyTimeseries, economyDeltaAroundDeath, digest integration)
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
+│       ├── openDotaSpikeWindowScanner.test.js   ← 72 assertions (decoupling, spike_lead/deficit, fastest enemy, sort, significant)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)
