@@ -22,102 +22,108 @@ const SIGNIFICANT_GAP_SECONDS = 120;  // |delta| > this → anchor is flagged as
 // Radiant slots: 0–4; Dire slots: 128–132.
 function isRadiant(playerSlot) { return playerSlot < 128; }
 
-// For a single player, return the earliest purchase_log time for any item in a bucket.
-// Returns null when the player has no purchase_log or bought nothing in that bucket.
-function earliestBucketTime(player, bucketItems) {
-  const log = player.purchase_log;
-  if (!log || !Array.isArray(log) || log.length === 0) return null;
-  let earliest = Infinity;
-  for (const entry of log) {
-    if (bucketItems.includes(entry.key) && typeof entry.time === 'number') {
-      if (entry.time < earliest) earliest = entry.time;
-    }
-  }
-  return earliest === Infinity ? null : earliest;
-}
-
 // ── Main ───────────────────────────────────────────────────────────────────
 
 /**
- * Produce spike-window delta anchors for each ability bucket.
+ * Produce spike-window delta anchors — one per spike item purchased by the player.
  *
- * @param {object[]} players       players[] array from OpenDota raw match data
- * @param {number}   selectedPlayerSlot  player_slot of the user's hero (0–4 radiant, 128–132 dire)
+ * For each spike item the player bought, the comparison target is:
+ *   1. The enemy's earliest purchase of the SAME item (exact match preferred).
+ *   2. Failing that, the enemy's earliest item in the same ability bucket (bucket fallback).
+ * Buckets with no enemy completion are silently skipped.
+ *
+ * @param {object[]} players              players[] from OpenDota raw match data
+ * @param {number}   selectedPlayerSlot   player_slot of the user's hero (0–4 radiant, 128–132 dire)
  * @returns {Array<{
  *   bucket, myItem, myTime, enemyHero, enemyItem, enemyTime,
  *   delta, type, significant
- * }>}  At most one anchor per bucket, sorted by |delta| descending.
+ * }>}  One anchor per purchased spike item, sorted by |delta| descending.
  */
 function scanSpikeWindowDeltas(players, selectedPlayerSlot) {
   if (!Array.isArray(players) || players.length === 0) return [];
 
-  // Find selected player.
   const myPlayer = players.find((p) => p.player_slot === selectedPlayerSlot);
   if (!myPlayer) return [];
 
-  const myTeamRadiant = isRadiant(selectedPlayerSlot);
+  const log = myPlayer.purchase_log;
+  if (!log || !Array.isArray(log) || log.length === 0) return [];
 
-  // Enemy players: opposite faction.
+  const myTeamRadiant = isRadiant(selectedPlayerSlot);
   const enemies = players.filter((p) => isRadiant(p.player_slot) !== myTeamRadiant);
   if (enemies.length === 0) return [];
 
-  const anchors = [];
-
-  for (const [bucket, bucketItems] of Object.entries(POWER_SPIKE_ITEMS)) {
-    const myTime = earliestBucketTime(myPlayer, bucketItems);
-    if (myTime === null) continue;  // my side has nothing in this bucket
-
-    // Find the earliest enemy completion and their hero display name.
-    let enemyTime = Infinity;
-    let enemyPlayer = null;
-    let enemyItem = null;
-
-    for (const enemy of enemies) {
-      const log = enemy.purchase_log;
-      if (!log || !Array.isArray(log)) continue;
-      for (const entry of log) {
-        if (bucketItems.includes(entry.key) && typeof entry.time === 'number') {
-          if (entry.time < enemyTime) {
-            enemyTime = entry.time;
-            enemyPlayer = enemy;
-            enemyItem = entry.key;
-          }
-        }
-      }
-    }
-
-    if (enemyPlayer === null) continue;  // no enemy completed this bucket
-
-    // Determine which item I completed first in this bucket.
-    let myItem = null;
-    let myEarliestTime = Infinity;
-    for (const entry of (myPlayer.purchase_log || [])) {
-      if (bucketItems.includes(entry.key) && typeof entry.time === 'number') {
-        if (entry.time < myEarliestTime) {
-          myEarliestTime = entry.time;
-          myItem = entry.key;
-        }
-      }
-    }
-
-    const delta = myTime - enemyTime;  // positive = I'm later = deficit; negative = I'm earlier = lead
-    const type  = delta > 0 ? 'spike_deficit' : 'spike_lead';
-
-    anchors.push({
-      bucket,
-      myItem,
-      myTime,
-      enemyHero: getHeroName(enemyPlayer.hero_id),
-      enemyItem,
-      enemyTime,
-      delta,
-      type,
-      significant: Math.abs(delta) > SIGNIFICANT_GAP_SECONDS,
-    });
+  // Build reverse lookup: item key → bucket name.
+  const itemToBucket = {};
+  for (const [bucket, items] of Object.entries(POWER_SPIKE_ITEMS)) {
+    for (const item of items) itemToBucket[item] = bucket;
   }
 
-  // Sort by |delta| descending: largest timing gap first.
-  anchors.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  // Pre-compute enemy earliest purchase time per item key (same-item comparison only).
+  // enemyByItem[itemKey] = { time, player }
+  // anyEnemyHasPurchases: true when the match is parsed (at least one enemy bought something).
+  const enemyByItem = {};
+  let anyEnemyHasPurchases = false;
+  for (const enemy of enemies) {
+    const eLog = enemy.purchase_log;
+    if (!eLog || !Array.isArray(eLog) || eLog.length === 0) continue;
+    anyEnemyHasPurchases = true;
+    for (const entry of eLog) {
+      if (!itemToBucket[entry.key] || typeof entry.time !== 'number') continue;
+      if (!enemyByItem[entry.key] || entry.time < enemyByItem[entry.key].time) {
+        enemyByItem[entry.key] = { time: entry.time, player: enemy };
+      }
+    }
+  }
+
+  // Collect my earliest purchase time per spike item key (de-duplicate resell/rebuy).
+  const myByItem = {};
+  for (const entry of log) {
+    const bucket = itemToBucket[entry.key];
+    if (!bucket || typeof entry.time !== 'number') continue;
+    if (!myByItem[entry.key] || entry.time < myByItem[entry.key]) {
+      myByItem[entry.key] = entry.time;
+    }
+  }
+
+  const anchors = [];
+
+  for (const [myItemKey, myTime] of Object.entries(myByItem)) {
+    const bucket = itemToBucket[myItemKey];
+    const enemyMatch = enemyByItem[myItemKey];
+
+    if (enemyMatch) {
+      // Enemy also bought the same item — compute timing delta.
+      const delta = myTime - enemyMatch.time;
+      anchors.push({
+        bucket,
+        myItem:      myItemKey,
+        myTime,
+        enemyHero:   getHeroName(enemyMatch.player.hero_id),
+        enemyItem:   myItemKey,
+        enemyTime:   enemyMatch.time,
+        delta,
+        type:        delta > 0 ? 'spike_deficit' : 'spike_lead',
+        significant: Math.abs(delta) > SIGNIFICANT_GAP_SECONDS,
+      });
+    } else if (anyEnemyHasPurchases) {
+      // Match is parsed, but no enemy bought this specific item — unique advantage.
+      anchors.push({
+        bucket,
+        myItem:      myItemKey,
+        myTime,
+        enemyHero:   null,
+        enemyItem:   null,
+        enemyTime:   null,
+        delta:       null,
+        type:        'spike_lead',
+        significant: true,
+      });
+    }
+    // else: all enemies have empty purchase_log (unparsed match) → skip
+  }
+
+  // Sort by |delta| descending; null delta (unique items) sort last (treated as 0 gap).
+  anchors.sort((a, b) => Math.abs(b.delta ?? 0) - Math.abs(a.delta ?? 0));
 
   return anchors;
 }

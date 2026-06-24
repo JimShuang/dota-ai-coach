@@ -200,11 +200,11 @@ assert(anchorDefSig.summary.includes('落后'),     'spike deficit: summary cont
 assert(anchorDefSig.summary.includes('05:00'),    'spike deficit: |300s|=05:00 in summary');
 assert(anchorDefSig.detail === defSig,            'spike: detail is original delta');
 
-// spike_deficit not significant → info
+// spike_deficit not significant → warning (significant only controls emphasis, not color)
 const defNotSig = makeSpikeDelta(1200, 'spike_deficit', 'damage', 60, false);
 const anchorDefNotSig = spikeToAnchor(defNotSig);
-assert(anchorDefNotSig.severity === 'info',
-  'spike deficit not-significant: severity=info');
+assert(anchorDefNotSig.severity === 'warning',
+  'spike deficit not-significant: severity=warning (any deficit is a concern)');
 assert(anchorDefNotSig.summary.includes('爆发'),  'spike damage: bucket 中文=爆发');
 
 // spike_lead → success
@@ -214,6 +214,24 @@ assert(anchorLead.severity === 'success',         'spike_lead: severity=success'
 assert(anchorLead.summary.includes('先手'),       'spike initiation: bucket 中文=先手');
 assert(anchorLead.summary.includes('领先'),       'spike lead: summary contains 领先');
 assert(anchorLead.summary.includes('03:00'),      'spike lead: |180s|=03:00 in summary');
+
+console.log('\n── spikeToAnchor: null delta (unique item, no enemy) ────────────────');
+
+const uniqueSpike = {
+  bucket: 'survivability', myItem: 'black_king_bar', myTime: 2263,
+  enemyHero: null, enemyItem: null, enemyTime: null,
+  delta: null, type: 'spike_lead', significant: true,
+};
+const anchorUnique = spikeToAnchor(uniqueSpike);
+assert(anchorUnique.gameTime  === 2263,          'spike null-delta: gameTime = myTime');
+assert(anchorUnique.kind      === 'spike',       'spike null-delta: kind = spike');
+assert(anchorUnique.type      === 'spike_lead',  'spike null-delta: type = spike_lead');
+assert(anchorUnique.severity  === 'success',     'spike null-delta: severity = success');
+assert(anchorUnique.summary.includes('生存'),    'spike null-delta: summary contains bucket 中文');
+assert(anchorUnique.summary.includes('强势期开始'), 'spike null-delta: summary contains 强势期开始');
+assert(!anchorUnique.summary.includes('领先'),   'spike null-delta: no 领先 in summary');
+assert(!anchorUnique.summary.includes('落后'),   'spike null-delta: no 落后 in summary');
+assert(anchorUnique.detail    === uniqueSpike,   'spike null-delta: detail is original object');
 
 console.log('\n── spikeToAnchor: all bucket Chinese names ──────────────────────────');
 

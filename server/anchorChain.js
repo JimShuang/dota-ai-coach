@@ -117,12 +117,25 @@ function momentumToAnchor(shift) {
  */
 function spikeToAnchor(delta) {
   const bucketZh = BUCKET_ZH[delta.bucket] || delta.bucket;
-  const dur      = fmtDuration(delta.delta);
 
-  // severity: spike_deficit + significant → warning; deficit non-significant → info; lead → success.
-  const severity = delta.type === 'spike_deficit'
-    ? (delta.significant ? 'warning' : 'info')
-    : 'success';
+  // Null delta → no enemy bought the same item; this is the start of the player's unique power spike.
+  if (delta.delta === null) {
+    return {
+      gameTime: delta.myTime,
+      minute:   Math.floor(delta.myTime / 60),
+      kind:     'spike',
+      type:     'spike_lead',
+      severity: 'success',
+      summary:  `${fmtTime(delta.myTime)} ${bucketZh} 强势期开始（无敌方同装备）`,
+      detail:   delta,
+    };
+  }
+
+  const dur = fmtDuration(delta.delta);
+
+  // severity: any spike_deficit → warning (being behind is always a concern);
+  // significant flag controls emphasis (bold / 显著 badge) but not color.
+  const severity = delta.type === 'spike_deficit' ? 'warning' : 'success';
 
   const summary = delta.type === 'spike_deficit'
     ? `${fmtTime(delta.myTime)} ${bucketZh} 强势期落后敌方 ${dur}`

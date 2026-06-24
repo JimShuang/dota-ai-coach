@@ -570,21 +570,27 @@ function MatchDetail({ matchId, onBack, onDelete }) {
                             {' @ '}
                             <span style={{ color: '#e6edf3' }}>{formatTime(anchor.detail.myTime)}</span>
                           </div>
-                          <div>
-                            敌方{' '}
-                            <span style={{ color: '#f0883e' }}>{anchor.detail.enemyHero}</span>
-                            {' 的 '}
-                            <span style={{ color: '#79c0ff' }}>{itemDisplayName(`item_${anchor.detail.enemyItem}`)}</span>
-                            {' @ '}
-                            <span style={{ color: '#e6edf3' }}>{formatTime(anchor.detail.enemyTime)}</span>
-                          </div>
-                          <div>
-                            {anchor.detail.delta > 0 ? '落后 ' : '领先 '}
-                            <span style={{ color: anchor.detail.delta > 0 ? '#f85149' : '#56d364', fontWeight: anchor.detail.significant ? '700' : '400' }}>
-                              {formatTime(Math.abs(anchor.detail.delta))}
-                            </span>
-                            {anchor.detail.significant && <span style={{ color: '#e3b341', marginLeft: '4px' }}>（显著）</span>}
-                          </div>
+                          {anchor.detail.enemyHero != null ? (
+                            <div>
+                              敌方{' '}
+                              <span style={{ color: '#f0883e' }}>{anchor.detail.enemyHero}</span>
+                              {' 的 '}
+                              <span style={{ color: '#79c0ff' }}>{itemDisplayName(`item_${anchor.detail.enemyItem}`)}</span>
+                              {' @ '}
+                              <span style={{ color: '#e6edf3' }}>{formatTime(anchor.detail.enemyTime)}</span>
+                            </div>
+                          ) : (
+                            <div style={{ color: '#56d364' }}>无敌方同装备，独有强势期</div>
+                          )}
+                          {anchor.detail.delta !== null && (
+                            <div>
+                              {anchor.detail.delta > 0 ? '落后 ' : '领先 '}
+                              <span style={{ color: anchor.detail.delta > 0 ? '#f85149' : '#56d364', fontWeight: anchor.detail.significant ? '700' : '400' }}>
+                                {formatTime(Math.abs(anchor.detail.delta))}
+                              </span>
+                              {anchor.detail.significant && <span style={{ color: '#e3b341', marginLeft: '4px' }}>（显著）</span>}
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

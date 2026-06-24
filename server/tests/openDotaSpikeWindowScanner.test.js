@@ -179,15 +179,15 @@ assert(fastInit.enemyHero === 'Juggernaut', 'fastest: enemyHero is Juggernaut (h
 assert(fastInit.delta === 1800 - 1200,      'fastest: delta = 600');
 assert(fastInit.type === 'spike_deficit',   'fastest: type spike_deficit');
 
-// ── Bucket with only my completion → no anchor ───────────────────────────
+// ── Bucket with only my completion → unique anchor (no enemy same-item) ──
 
-console.log('\n── bucket with only my completion → no anchor ───────────────────────');
+console.log('\n── bucket with only my completion → unique anchor (null delta) ───────');
 
 const onlyMyBucket = [
   makePlayer(MY_SLOT, MY_HERO_ID, [
     makePurchase('force_staff', 1000),  // support bucket
   ]),
-  makePlayer(128, 14, [makePurchase('blink', 1100)]),  // initiation only
+  makePlayer(128, 14, [makePurchase('blink', 1100)]),  // initiation only, not support
   makePlayer(129, 8,  []),
   makePlayer(130, 5,  []),
   makePlayer(131, 4,  []),
@@ -195,11 +195,19 @@ const onlyMyBucket = [
 ];
 
 const onlyMyResult = scanSpikeWindowDeltas(onlyMyBucket, MY_SLOT);
-assert(onlyMyResult.find((a) => a.bucket === 'support') === undefined,
-  'only-my-bucket: no support anchor when no enemy completed support bucket');
-// Initiation is not completed by me, so also no initiation anchor.
+
+// No enemy has force_staff → support anchor present with null delta (my unique power spike).
+const uniqueSupport = onlyMyResult.find((a) => a.bucket === 'support');
+assert(uniqueSupport !== undefined,          'only-my-bucket: support anchor present (unique spike)');
+assert(uniqueSupport.delta === null,         'only-my-bucket: delta is null (no enemy same-item)');
+assert(uniqueSupport.type === 'spike_lead',  'only-my-bucket: type = spike_lead');
+assert(uniqueSupport.enemyHero === null,     'only-my-bucket: enemyHero = null');
+assert(uniqueSupport.enemyItem === null,     'only-my-bucket: enemyItem = null');
+assert(uniqueSupport.enemyTime === null,     'only-my-bucket: enemyTime = null');
+assert(uniqueSupport.significant === true,   'only-my-bucket: unique items are always significant');
+// I did not buy any initiation item → still no initiation anchor.
 assert(onlyMyResult.find((a) => a.bucket === 'initiation') === undefined,
-  'only-my-bucket: no initiation anchor either (I did not buy it)');
+  'only-my-bucket: no initiation anchor (I did not buy it)');
 
 // ── Bucket with only enemy completion → no anchor ────────────────────────
 
@@ -220,15 +228,15 @@ const onlyEnemyResult = scanSpikeWindowDeltas(onlyEnemyBucket, MY_SLOT);
 assert(onlyEnemyResult.find((a) => a.bucket === 'support') === undefined,
   'only-enemy-bucket: no support anchor when I did not complete support bucket');
 
-// ── My player buys multiple items in one bucket → earliest taken ──────────
+// ── My player buys multiple items in one bucket → one anchor per item ────
 
-console.log('\n── multi-item in same bucket: earliest time used ────────────────────');
+console.log('\n── multi-item in same bucket: one anchor per purchased item ─────────');
 
 const multiItemPlayers = [
   makePlayer(MY_SLOT, MY_HERO_ID, [
-    makePurchase('pipe', 2000),           // survivability, bought second
-    makePurchase('black_king_bar', 1500), // survivability, bought first
-    makePurchase('crimson_guard', 2500),  // survivability, bought third
+    makePurchase('pipe', 2000),           // survivability
+    makePurchase('black_king_bar', 1500), // survivability
+    makePurchase('crimson_guard', 2500),  // survivability
   ]),
   makePlayer(128, 14, [makePurchase('black_king_bar', 1800)]),
   makePlayer(129, 8,  []),
@@ -238,13 +246,33 @@ const multiItemPlayers = [
 ];
 
 const multiItemResult = scanSpikeWindowDeltas(multiItemPlayers, MY_SLOT);
-const multiSurv       = multiItemResult.find((a) => a.bucket === 'survivability');
 
-assert(multiSurv !== undefined,                    'multi-item: survivability anchor present');
-assert(multiSurv.myTime === 1500,                  'multi-item: myTime is the earliest (1500)');
-assert(multiSurv.myItem === 'black_king_bar',      'multi-item: myItem is the earliest item');
-assert(multiSurv.delta === 1500 - 1800,            'multi-item: delta based on earliest myTime');
-assert(multiSurv.type === 'spike_lead',            'multi-item: spike_lead (I was earlier)');
+// One anchor per item I bought in the bucket (3 items → 3 anchors).
+assert(multiItemResult.length === 3, 'multi-item: 3 anchors (one per purchased spike item)');
+
+// BKB: exact same-item comparison (enemy also bought BKB).
+const bkbAnchor = multiItemResult.find((a) => a.myItem === 'black_king_bar');
+assert(bkbAnchor !== undefined,                        'multi-item: BKB anchor present');
+assert(bkbAnchor.myTime === 1500,                      'multi-item: BKB myTime = 1500');
+assert(bkbAnchor.enemyItem === 'black_king_bar',       'multi-item: BKB same-item comparison');
+assert(bkbAnchor.delta === 1500 - 1800,                'multi-item: BKB delta = -300 (spike_lead)');
+assert(bkbAnchor.type === 'spike_lead',                'multi-item: BKB spike_lead (earlier than enemy)');
+
+// pipe: no enemy pipe → null delta (my unique advantage, no bucket fallback).
+const pipeAnchor = multiItemResult.find((a) => a.myItem === 'pipe');
+assert(pipeAnchor !== undefined,                       'multi-item: pipe anchor present');
+assert(pipeAnchor.myTime === 2000,                     'multi-item: pipe myTime = 2000');
+assert(pipeAnchor.delta === null,                      'multi-item: pipe delta null (no enemy pipe)');
+assert(pipeAnchor.type === 'spike_lead',               'multi-item: pipe spike_lead (unique item)');
+assert(pipeAnchor.enemyHero === null,                  'multi-item: pipe enemyHero null');
+
+// crimson_guard: no enemy crimson_guard → null delta.
+const cgAnchor = multiItemResult.find((a) => a.myItem === 'crimson_guard');
+assert(cgAnchor !== undefined,                         'multi-item: crimson_guard anchor present');
+assert(cgAnchor.myTime === 2500,                       'multi-item: crimson_guard myTime = 2500');
+assert(cgAnchor.delta === null,                        'multi-item: crimson_guard delta null');
+assert(cgAnchor.type === 'spike_lead',                 'multi-item: crimson_guard spike_lead');
+assert(cgAnchor.enemyHero === null,                    'multi-item: crimson_guard enemyHero null');
 
 // ── significant flag: above and below threshold ───────────────────────────
 

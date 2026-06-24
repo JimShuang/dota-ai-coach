@@ -366,8 +366,8 @@ server/tests/
   openDotaDeathDigest.test.js          61 assertions — buildDeathDigest (window boundaries, chainDeaths, killsNearby, objectivesLost/Gained, majorObjectiveLost, diedWithBuyback, slim shape)
   openDotaEconomyTimeseries.test.js    86 assertions — buildEconomyTimeseries (radiant/dire sign flip, null/missing data, xp), economyDeltaAroundDeath (minuteAtDeath, delta, out-of-range, dual-threshold significant), digest integration (context.economy present, degradation)
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
-  openDotaSpikeWindowScanner.test.js   72 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket/only-enemy-bucket, multi-item earliest-time, significant threshold, sort order, anchor shape, dire slot, profile hero display name
-  anchorChain.test.js                  93 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
+  openDotaSpikeWindowScanner.test.js   89 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name
+  anchorChain.test.js                 102 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
 ```
 
 Run with: `node server/tests/<file>.test.js`
@@ -803,16 +803,20 @@ Implemented in `server/openDotaSpikeWindowScanner.js`.
 
 ### `scanSpikeWindowDeltas(players, selectedPlayerSlot) → anchors[]`
 
-For each bucket, compares the **earliest completion time** by the selected player against the **earliest completion time among the five enemies**. At most one anchor per bucket; sorted by `|delta|` descending (largest gap first).
+Produces **one anchor per spike item purchased by the player** (not one per bucket). For each item the player bought that belongs to any bucket, the comparison target is:
+1. **Same-item**: the enemy's earliest purchase of the exact same item (preferred).
+2. **Bucket fallback**: the enemy's earliest item in the same ability bucket (when no enemy bought that exact item).
+
+Sorted by `|delta|` descending (largest gap first).
 
 ```js
 {
   bucket,       // 'survivability' | 'initiation' | 'farming' | 'damage' | 'control' | 'support'
-  myItem,       // first item in bucket purchased by the player
-  myTime,       // purchase_log time in seconds
-  enemyHero,    // display name of the fastest enemy (profile heroes 中文（English）, others English)
-  enemyItem,    // first item in bucket purchased by that enemy
-  enemyTime,
+  myItem,       // item key purchased by the player (e.g. 'black_king_bar')
+  myTime,       // player's purchase_log time in seconds
+  enemyHero,    // display name of the matched enemy (profile heroes 中文（English）, others English)
+  enemyItem,    // matched enemy item (same as myItem on exact match; different on bucket fallback)
+  enemyTime,    // matched enemy's purchase_log time in seconds
   delta,        // myTime − enemyTime (positive = deficit, negative = lead)
   type,         // 'spike_deficit' (delta > 0) | 'spike_lead' (delta < 0)
   significant,  // Math.abs(delta) > SIGNIFICANT_GAP_SECONDS (default 120 s)
@@ -821,9 +825,13 @@ For each bucket, compares the **earliest completion time** by the selected playe
 
 ### Boundary conditions
 
-- Bucket absent for **either** side → no anchor for that bucket (no guessing, no zero-fill)
+- Player bought no items in any bucket → `[]`
 - `purchase_log` missing or empty → `[]`
+- All enemies have empty `purchase_log` (unparsed match) → `[]`
+- At least one enemy has purchases but no enemy bought the same item → null-delta anchor (`type='spike_lead'`, `delta/enemyHero/enemyItem/enemyTime=null`, `significant=true`)
+- Player bought multiple items in same bucket → one anchor per item
 - Tie among enemies → any one of the co-earliest qualifies (order undefined for ties)
+- Null-delta anchors sort last in scanner output (`|null ?? 0| = 0`); final chain order is gameTime ASC
 
 ### Threshold constant (`openDotaSpikeWindowScanner.js`)
 
@@ -862,8 +870,7 @@ The scanners are invoked by the endpoint in `server/index.js`, which passes thei
 | `death` | any | passthrough from the event row's own `severity` |
 | `momentum` | `momentum_loss` | `warning` |
 | `momentum` | `momentum_gain` | `success` |
-| `spike` | `spike_deficit` + `significant: true` | `warning` |
-| `spike` | `spike_deficit` + `significant: false` | `info` |
+| `spike` | `spike_deficit` (any) | `warning` — `significant` controls emphasis (bold / 显著 badge) only |
 | `spike` | `spike_lead` | `success` |
 
 ### Time unit decision
@@ -973,7 +980,7 @@ dota-ai-coach/
 │       ├── openDotaDeathDigest.test.js          ← 61 assertions (buildDeathDigest, window, chainDeaths, objectives, diedWithBuyback)
 │       ├── openDotaEconomyTimeseries.test.js    ← 86 assertions (buildEconomyTimeseries, economyDeltaAroundDeath, digest integration)
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
-│       ├── openDotaSpikeWindowScanner.test.js   ← 72 assertions (decoupling, spike_lead/deficit, fastest enemy, sort, significant)
+│       ├── openDotaSpikeWindowScanner.test.js   ← 89 assertions (decoupling, spike_lead/deficit, multi-item per-item, null-delta unique, fastest enemy, sort, significant)
 │       ├── anchorChain.test.js                  ← 93 assertions (decoupling, all mappers, merge sort, tie-break, shape)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
