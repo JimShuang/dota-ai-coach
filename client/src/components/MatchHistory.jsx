@@ -165,6 +165,8 @@ function MatchDetail({ matchId, onBack, onDelete }) {
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const [deathDigest, setDeathDigest]     = useState(null);
   const [economyTs, setEconomyTs]         = useState(null);
+  const [anchorChain, setAnchorChain]     = useState([]);
+  const [expandedAnchors, setExpandedAnchors] = useState(new Set());
 
   useEffect(() => {
     fetch(`/api/history/matches/${matchId}`)
@@ -182,6 +184,11 @@ function MatchDetail({ matchId, onBack, onDelete }) {
     fetch(`/api/history/matches/${matchId}/economy-timeseries`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => { if (data?.available) setEconomyTs(data); })
+      .catch(() => {});
+
+    fetch(`/api/history/matches/${matchId}/anchor-chain`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (data?.anchors?.length) setAnchorChain(data.anchors); })
       .catch(() => {});
   }, [matchId]);
 
@@ -206,6 +213,77 @@ function MatchDetail({ matchId, onBack, onDelete }) {
     ? events.filter((e) => e.type === 'hero_death' && e.snapshot?.source === 'opendota_import').length
     : 0;
   const missingDeaths = isImport ? Math.max(0, (m.deaths || 0) - reconstructedDeaths) : 0;
+
+  // Shared renderer for the death battlefield context block.
+  // Called from renderEventRow (event timeline) and anchor chain detail expansion.
+  function renderDeathContext(ctx) {
+    if (!ctx) return null;
+    if (!(ctx.chainDeaths?.length > 0 || ctx.killsNearby?.length > 0 || ctx.objectivesLost?.length > 0 || ctx.objectivesGained?.length > 0 || ctx.diedWithBuyback != null || (ctx.economy?.available && ctx.economy.delta != null))) return null;
+    return (
+      <div style={{
+        marginLeft: '46px', marginTop: '4px', padding: '6px 8px',
+        background: '#0d1117',
+        border: `1px solid ${ctx.majorObjectiveLost ? '#f8514933' : '#30363d44'}`,
+        borderRadius: '6px', fontSize: '11px',
+        display: 'flex', flexDirection: 'column', gap: '3px',
+      }}>
+        <div style={{ fontSize: '10px', color: '#8b949e55', marginBottom: '1px' }}>战场上下文</div>
+        {ctx.diedWithBuyback != null && (
+          <div style={{ color: ctx.diedWithBuyback ? '#e3b341' : '#8b949e' }}>
+            {ctx.diedWithBuyback ? '⚠ 死亡时有买活金币' : '死亡时无买活金币'}
+          </div>
+        )}
+        {ctx.chainDeaths?.length > 0 && (
+          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ color: '#f85149' }}>连续死亡 ×{ctx.chainDeaths.length}</span>
+            {ctx.chainDeaths.map((d) => (
+              <span key={d.game_time} style={{ color: '#8b949e88', fontSize: '10px' }}>{formatTime(d.game_time)}</span>
+            ))}
+          </div>
+        )}
+        {ctx.killsNearby?.length > 0 && (
+          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ color: '#56d364' }}>前后击杀 ×{ctx.killsNearby.length}</span>
+            {ctx.killsNearby.map((k) => (
+              <span key={k.game_time} style={{ color: '#8b949e88', fontSize: '10px' }}>{formatTime(k.game_time)}</span>
+            ))}
+          </div>
+        )}
+        {ctx.objectivesLost?.length > 0 && (
+          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ color: '#f85149' }}>期间我方失去：</span>
+            {ctx.objectivesLost.map((o) => (
+              <span key={o.game_time} style={{ color: '#f8514988', fontSize: '10px' }}>
+                {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
+              </span>
+            ))}
+          </div>
+        )}
+        {ctx.objectivesGained?.length > 0 && (
+          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ color: '#56d364' }}>期间摧毁敌方：</span>
+            {ctx.objectivesGained.map((o) => (
+              <span key={o.game_time} style={{ color: '#56d36488', fontSize: '10px' }}>
+                {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
+              </span>
+            ))}
+          </div>
+        )}
+        {ctx.economy?.available && ctx.economy.delta != null && (
+          <div style={{
+            color:      ctx.economy.delta < 0 ? '#f85149' : '#56d364',
+            fontWeight: ctx.economy.significant ? '700' : '400',
+          }}>
+            {ctx.economy.delta < 0 ? '死亡后1分钟经济差恶化 ' : '死亡后1分钟经济差改善 '}
+            {Math.abs(ctx.economy.delta).toLocaleString()}g
+            {ctx.economy.significant && (
+              <span style={{ fontSize: '10px', color: '#8b949e', fontWeight: '400', marginLeft: '4px' }}>≈ 分钟级</span>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Render a single event row — shared by grouped and ungrouped paths.
   // Snapshot fields are optional: only hero_death has full snapshots; OpenDota
@@ -287,70 +365,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
           </div>
         )}
         {/* Battle context — from /death-digest; silently absent until fetch completes or if fetch fails */}
-        {ctx && (ctx.chainDeaths.length > 0 || ctx.killsNearby.length > 0 || ctx.objectivesLost.length > 0 || ctx.objectivesGained.length > 0 || ctx.diedWithBuyback != null || (ctx.economy?.available && ctx.economy.delta != null)) && (
-          <div style={{
-            marginLeft: '46px', marginTop: '4px', padding: '6px 8px',
-            background: '#0d1117',
-            border: `1px solid ${ctx.majorObjectiveLost ? '#f8514933' : '#30363d44'}`,
-            borderRadius: '6px', fontSize: '11px',
-            display: 'flex', flexDirection: 'column', gap: '3px',
-          }}>
-            <div style={{ fontSize: '10px', color: '#8b949e55', marginBottom: '1px' }}>战场上下文</div>
-            {ctx.diedWithBuyback != null && (
-              <div style={{ color: ctx.diedWithBuyback ? '#e3b341' : '#8b949e' }}>
-                {ctx.diedWithBuyback ? '⚠ 死亡时有买活金币' : '死亡时无买活金币'}
-              </div>
-            )}
-            {ctx.chainDeaths.length > 0 && (
-              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ color: '#f85149' }}>连续死亡 ×{ctx.chainDeaths.length}</span>
-                {ctx.chainDeaths.map((d) => (
-                  <span key={d.game_time} style={{ color: '#8b949e88', fontSize: '10px' }}>{formatTime(d.game_time)}</span>
-                ))}
-              </div>
-            )}
-            {ctx.killsNearby.length > 0 && (
-              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ color: '#56d364' }}>前后击杀 ×{ctx.killsNearby.length}</span>
-                {ctx.killsNearby.map((k) => (
-                  <span key={k.game_time} style={{ color: '#8b949e88', fontSize: '10px' }}>{formatTime(k.game_time)}</span>
-                ))}
-              </div>
-            )}
-            {ctx.objectivesLost.length > 0 && (
-              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ color: '#f85149' }}>期间我方失去：</span>
-                {ctx.objectivesLost.map((o) => (
-                  <span key={o.game_time} style={{ color: '#f8514988', fontSize: '10px' }}>
-                    {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
-                  </span>
-                ))}
-              </div>
-            )}
-            {ctx.objectivesGained.length > 0 && (
-              <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', alignItems: 'center' }}>
-                <span style={{ color: '#56d364' }}>期间摧毁敌方：</span>
-                {ctx.objectivesGained.map((o) => (
-                  <span key={o.game_time} style={{ color: '#56d36488', fontSize: '10px' }}>
-                    {o.snapshot?.objectiveType === 'tower' ? '🏰' : o.snapshot?.objectiveType === 'barracks' ? '⚔️' : '💀'} {formatTime(o.game_time)}
-                  </span>
-                ))}
-              </div>
-            )}
-            {ctx.economy?.available && ctx.economy.delta != null && (
-              <div style={{
-                color:      ctx.economy.delta < 0 ? '#f85149' : '#56d364',
-                fontWeight: ctx.economy.significant ? '700' : '400',
-              }}>
-                {ctx.economy.delta < 0 ? '死亡后1分钟经济差恶化 ' : '死亡后1分钟经济差改善 '}
-                {Math.abs(ctx.economy.delta).toLocaleString()}g
-                {ctx.economy.significant && (
-                  <span style={{ fontSize: '10px', color: '#8b949e', fontWeight: '400', marginLeft: '4px' }}>≈ 分钟级</span>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+        {renderDeathContext(ctx)}
       </div>
     );
   }
@@ -489,6 +504,94 @@ function MatchDetail({ matchId, onBack, onDelete }) {
           </div>
           <div style={{ fontSize: '13px', color: '#e6edf3', lineHeight: '1.6' }}>
             {m.one_thing_to_improve}
+          </div>
+        </div>
+      )}
+
+      {/* Anchor chain — 关键时刻 (empty → whole block hidden; GSI matches without timeseries silently degrade) */}
+      {anchorChain.length > 0 && (
+        <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px' }}>
+          <div style={{ fontSize: '12px', color: '#f0883e', fontWeight: '600', marginBottom: '10px' }}>
+            关键时刻
+            <span style={{ fontSize: '10px', color: '#8b949e', fontWeight: '400', marginLeft: '8px' }}>
+              逻辑链 · {anchorChain.length} 个锚点
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {anchorChain.map((anchor, idx) => {
+              const isExpanded = expandedAnchors.has(idx);
+              const aColor = { critical: '#f85149', danger: '#f85149', warning: '#e3b341', success: '#56d364', info: '#79c0ff' }[anchor.severity] || '#8b949e';
+              const icon = anchor.kind === 'death' ? '💀'
+                : anchor.kind === 'momentum' ? (anchor.type === 'momentum_gain' ? '📈' : '📉')
+                : '⏱️';
+              return (
+                <div key={idx}>
+                  <div
+                    onClick={() => setExpandedAnchors((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(idx)) next.delete(idx); else next.add(idx);
+                      return next;
+                    })}
+                    style={{ padding: '5px 0', borderBottom: '1px solid #30363d22', display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
+                  >
+                    <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                      {formatTime(anchor.gameTime)}
+                    </span>
+                    <span style={{ fontSize: '13px', flexShrink: 0 }}>{icon}</span>
+                    <span style={{ fontSize: '12px', color: aColor, flex: 1, lineHeight: '1.4' }}>{anchor.summary}</span>
+                    <span style={{ fontSize: '11px', color: '#8b949e55', flexShrink: 0 }}>{isExpanded ? '▾' : '▸'}</span>
+                  </div>
+                  {isExpanded && (
+                    <div style={{ marginLeft: '46px', marginBottom: '4px' }}>
+                      {anchor.kind === 'death' && renderDeathContext(anchor.detail?.context)}
+                      {anchor.kind === 'momentum' && anchor.detail && (
+                        <div style={{ marginTop: '4px', padding: '6px 8px', background: '#161b22', borderRadius: '6px', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <div>
+                            节奏斜率{' '}
+                            <span style={{ color: anchor.detail.slopeBefore > 0 ? '#56d364' : '#f85149' }}>{Math.round(anchor.detail.slopeBefore)}</span>
+                            {' → '}
+                            <span style={{ color: anchor.detail.slopeAfter > 0 ? '#56d364' : '#f85149' }}>{Math.round(anchor.detail.slopeAfter)}</span>
+                            {' 金币/分钟'}
+                          </div>
+                          <div>变化幅度 <span style={{ color: '#e3b341' }}>{Math.round(anchor.detail.magnitude)}</span> 金币/分钟</div>
+                          <div>
+                            拐点经济差{' '}
+                            <span style={{ color: anchor.detail.advAtShift >= 0 ? '#56d364' : '#f85149' }}>
+                              {anchor.detail.advAtShift > 0 ? '+' : ''}{anchor.detail.advAtShift?.toLocaleString?.() ?? anchor.detail.advAtShift}g
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                      {anchor.kind === 'spike' && anchor.detail && (
+                        <div style={{ marginTop: '4px', padding: '6px 8px', background: '#161b22', borderRadius: '6px', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <div>
+                            我方{' '}
+                            <span style={{ color: '#79c0ff' }}>{itemDisplayName(`item_${anchor.detail.myItem}`)}</span>
+                            {' @ '}
+                            <span style={{ color: '#e6edf3' }}>{formatTime(anchor.detail.myTime)}</span>
+                          </div>
+                          <div>
+                            敌方{' '}
+                            <span style={{ color: '#f0883e' }}>{anchor.detail.enemyHero}</span>
+                            {' 的 '}
+                            <span style={{ color: '#79c0ff' }}>{itemDisplayName(`item_${anchor.detail.enemyItem}`)}</span>
+                            {' @ '}
+                            <span style={{ color: '#e6edf3' }}>{formatTime(anchor.detail.enemyTime)}</span>
+                          </div>
+                          <div>
+                            {anchor.detail.delta > 0 ? '落后 ' : '领先 '}
+                            <span style={{ color: anchor.detail.delta > 0 ? '#f85149' : '#56d364', fontWeight: anchor.detail.significant ? '700' : '400' }}>
+                              {formatTime(Math.abs(anchor.detail.delta))}
+                            </span>
+                            {anchor.detail.significant && <span style={{ color: '#e3b341', marginLeft: '4px' }}>（显著）</span>}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

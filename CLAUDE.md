@@ -888,6 +888,23 @@ Death anchors reference Death Digest — see **Death Digest feature** section.
 Momentum anchors reference the scanner — see **Momentum Shift Anchors** section.
 Spike anchors reference the scanner — see **Spike Window Delta Anchors** section.
 
+### Frontend integration (`MatchHistory.jsx`)
+
+`MatchDetail` fetches `/anchor-chain` in parallel with `/death-digest` and `/economy-timeseries` (same `useEffect`, same silent-fail pattern). Result stored in `anchorChain` state (empty array as default — no extra guard needed).
+
+**"关键时刻" block** renders immediately above the full event timeline in match detail view. Entire block is suppressed when `anchorChain` is empty (common for GSI-only matches that have no OpenDota timeseries). When present, anchors are rendered in `gameTime` ascending order (endpoint already sorts them).
+
+**Per-row layout:** `mm:ss` | kind icon (💀/📈/📉/⏱️) | `summary` text coloured by `severity` (critical/danger → red, warning → orange, info → grey, success → green) | expand arrow `▸`/`▾`.
+
+**Expand detail by kind:**
+- `death` — calls `renderDeathContext(anchor.detail.context)`, the same function used by the full event timeline's "战场上下文" sub-block. No duplicate implementation.
+- `momentum` — inline panel: slope before/after (gold/min), magnitude, economy gap at shift point.
+- `spike` — inline panel: my item + time vs enemy hero + item + time, lead/deficit formatted as mm:ss with "显著" label when `significant: true`. Item names passed through `itemDisplayName('item_' + rawKey)`.
+
+**`renderDeathContext(ctx)`** is an extracted inner function inside `MatchDetail`. Both the event timeline and anchor chain call it. The function returns `null` when `ctx` is null or has no interesting fields (empty arrays and `diedWithBuyback == null` and no economy data).
+
+**Degradation:** anchor-chain fetch failure → `anchorChain` stays `[]` → block absent, no error shown. GSI matches where only death anchors exist will show just death rows (no momentum/spike). That is normal.
+
 ---
 
 ## Future roadmap
