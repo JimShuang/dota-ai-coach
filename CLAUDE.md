@@ -73,6 +73,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/data/genericPowerSpikeItems.js` | 6-bucket universal power-spike item list for enemy comparison (distinct from hero-specific `offlaneHeroProfiles.js` keyItems) |
 | `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas, decoupled from event/death/digest/timeseries/momentum modules |
 | `server/anchorChain.js` | Pure convergence layer: maps the three anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
+| `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; exports `GAP_THRESHOLD`. |
 
 ---
 
@@ -368,11 +369,12 @@ server/tests/
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
   openDotaSpikeWindowScanner.test.js   89 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name
   anchorChain.test.js                 102 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
+  anchorLinker.test.js                 68 assertions — decoupling (no scanner imports), isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1067 assertions must pass before merging any change.
+All 1161 assertions must pass before merging any change.
 
 ---
 
@@ -914,6 +916,65 @@ Spike anchors reference the scanner — see **Spike Window Delta Anchors** secti
 
 ---
 
+## Anchor Links
+
+Links pairs of anchors where one event plausibly caused or contributed to another.
+Implemented in `server/anchorLinker.js`. Pure function — no I/O, no DB, does not import any scanner module.
+
+### Rule A1: death → momentum_loss
+
+Hypothesis: a hero death triggered (or was part of) the team momentum shift that followed.
+
+**Three gates:**
+1. `anchorA.kind === 'death'`
+2. `anchorB.kind === 'momentum' && anchorB.type === 'momentum_loss'`
+3. `gap = anchorB.gameTime − anchorA.gameTime` in `[0, GAP_THRESHOLD]` (default 300 s)
+
+Returns `null` if any gate fails; otherwise a link object `{ rule, anchors, score, evidence }`.
+
+### `isLethalDeath(deathAnchor)`
+
+Determines whether a death anchor carries measurable downstream consequences available from OpenDota import data. Three OR signals:
+
+| Signal | Source | Notes |
+|--------|--------|-------|
+| `context.chainDeaths.length > 0` | death digest context | Other deaths in the ±5s/+60s window — teamwipe cascade |
+| `context.economy.available && context.economy.significant` | death digest economy delta | Economy advantage deteriorated significantly around the death minute |
+| `severity === 'critical'` | GSI only | OD imports are always `'danger'` — this branch is always `false` for imports; kept for GSI compatibility |
+
+`context` guard fires first: if `detail.context` is null/absent, returns `false` regardless of severity.
+
+### `scoreA1(deathAnchor, gap) → 'strong' | 'medium' | 'weak'`
+
+| `near` (gap ≤ 45 s) | `lethal` | score |
+|---------------------|----------|-------|
+| true | true | **strong** |
+| true | false | medium |
+| false | true | medium |
+| false | false | weak |
+
+**Key:** the `'strong'` tier is now reachable for OpenDota imports via `chainDeaths` or `economy.significant`. The previous `severity === 'critical'`-only approach permanently capped OD imports at `'medium'`.
+
+### `evidence` fields
+
+```js
+{
+  gap_seconds:         number,   // anchorB.gameTime − anchorA.gameTime
+  death_severity:      string,   // 'danger' | 'critical'
+  chain_deaths:        number,   // ctx.chainDeaths.length (0 if absent)
+  economy_significant: boolean,  // ctx.economy.available && ctx.economy.significant
+  lethal:              boolean,  // isLethalDeath(anchorA)
+  slope_after:         number,   // anchorB.detail.slopeAfter
+  magnitude:           number,   // anchorB.detail.magnitude
+}
+```
+
+### Exported API
+
+`isLethalDeath`, `scoreA1`, `ruleA1`, `GAP_THRESHOLD`
+
+---
+
 ## Future roadmap
 
 ### Near-term
@@ -955,6 +1016,7 @@ dota-ai-coach/
 │   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
 │   ├── openDotaMomentumScanner.js     ← Pure: scanMomentumShifts(timeseries) — decoupled anchor scanner
 │   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor + buildAnchorChain()
+│   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 + GAP_THRESHOLD
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -982,6 +1044,7 @@ dota-ai-coach/
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
 │       ├── openDotaSpikeWindowScanner.test.js   ← 89 assertions (decoupling, spike_lead/deficit, multi-item per-item, null-delta unique, fastest enemy, sort, significant)
 │       ├── anchorChain.test.js                  ← 93 assertions (decoupling, all mappers, merge sort, tie-break, shape)
+│       ├── anchorLinker.test.js                 ← 68 assertions (decoupling, isLethalDeath, scoreA1, ruleA1 gates + evidence)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)
