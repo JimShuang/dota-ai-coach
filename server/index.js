@@ -11,6 +11,7 @@ const { buildEconomyTimeseries } = require('./openDotaEconomyTimeseries');
 const { scanMomentumShifts } = require('./openDotaMomentumScanner');
 const { scanSpikeWindowDeltas } = require('./openDotaSpikeWindowScanner');
 const { buildAnchorChain } = require('./anchorChain');
+const { ruleA1, GAP_THRESHOLD } = require('./anchorLinker');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -294,7 +295,32 @@ app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
   const momentumShifts = scanMomentumShifts(timeseries);
   const spikeDeltas    = scanSpikeWindowDeltas(players, m.player_slot);
 
-  res.json({ anchors: buildAnchorChain({ deaths, momentumShifts, spikeDeltas }) });
+  const anchors = buildAnchorChain({ deaths, momentumShifts, spikeDeltas });
+
+  // Compute causal links: run ruleA1 over all death→momentum pairs within GAP_THRESHOLD.
+  // Anchors are gameTime-sorted, so we can break the inner loop early.
+  const links = [];
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i];
+    if (a.kind !== 'death') continue;
+    for (let j = i + 1; j < anchors.length; j++) {
+      const b = anchors[j];
+      if (b.gameTime - a.gameTime > GAP_THRESHOLD) break;
+      const result = ruleA1(a, b);
+      if (result) {
+        links.push({
+          from:       a.gameTime,
+          to:         b.gameTime,
+          rule:       result.rule,
+          relation:   'death_triggered_collapse',
+          confidence: result.score,
+          evidence:   result.evidence,
+        });
+      }
+    }
+  }
+
+  res.json({ anchors, links });
 });
 
 app.get('/api/history/stats', (req, res) => {

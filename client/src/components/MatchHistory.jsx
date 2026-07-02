@@ -40,6 +40,46 @@ function formatDate(unixSeconds) {
   });
 }
 
+// ── Causal link metadata ───────────────────────────────────────────────────
+
+// Extend here when new rules (A2, A3…) are added.
+// fromBadge/toBadge/cardTitle use formatTime which is defined above this constant.
+const RELATION_META = {
+  death_triggered_collapse: {
+    fromKind:  'death',
+    toKind:    'momentum',
+    fromBadge: '⚡ 引发经济崩盘',
+    toBadge:   (l) => `← 源于 ${formatTime(l.from)} 的死亡`,
+    cardTitle: (l) => `${formatTime(l.from)} 阵亡 → ${formatTime(l.to)} 经济崩盘`,
+  },
+};
+
+const CONFIDENCE_STYLE = {
+  strong: { color: '#f85149', bg: '#3d1a1a', border: '#f8514966', label: '高置信' },
+  medium: { color: '#e3b341', bg: '#2b2200',  border: '#e3b34166', label: '中等'   },
+  weak:   { color: '#8b949e', bg: 'transparent', border: '#8b949e55', label: '弱关联' },
+};
+
+function CausalBadge({ text, confidence, isActive, onClick }) {
+  const cs = CONFIDENCE_STYLE[confidence] || CONFIDENCE_STYLE.weak;
+  return (
+    <span
+      onClick={onClick}
+      style={{
+        padding: '1px 7px', borderRadius: '10px', fontSize: '10px',
+        fontWeight: isActive ? '700' : '600',
+        background: cs.bg,
+        color: cs.color,
+        border: `1px solid ${isActive ? cs.color : cs.border}`,
+        outline: isActive ? `2px solid ${cs.color}33` : 'none',
+        cursor: 'pointer', flexShrink: 0,
+      }}
+    >
+      {text}
+    </span>
+  );
+}
+
 function Badge({ text, color, bg }) {
   return (
     <span style={{
@@ -165,8 +205,11 @@ function MatchDetail({ matchId, onBack, onDelete }) {
   const [expandedGroups, setExpandedGroups] = useState(new Set());
   const [deathDigest, setDeathDigest]     = useState(null);
   const [economyTs, setEconomyTs]         = useState(null);
-  const [anchorChain, setAnchorChain]     = useState([]);
+  const [anchorChain, setAnchorChain]         = useState([]);
+  const [anchorLinks, setAnchorLinks]         = useState([]);
   const [expandedAnchors, setExpandedAnchors] = useState(new Set());
+  const [activeLink, setActiveLink]           = useState(null);
+  const [expandedCards, setExpandedCards]     = useState(new Set());
 
   useEffect(() => {
     fetch(`/api/history/matches/${matchId}`)
@@ -188,7 +231,10 @@ function MatchDetail({ matchId, onBack, onDelete }) {
 
     fetch(`/api/history/matches/${matchId}/anchor-chain`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => { if (data?.anchors?.length) setAnchorChain(data.anchors); })
+      .then((data) => {
+        if (data?.anchors?.length) setAnchorChain(data.anchors);
+        if (data?.links?.length)   setAnchorLinks(data.links);
+      })
       .catch(() => {});
   }, [matchId]);
 
@@ -204,6 +250,16 @@ function MatchDetail({ matchId, onBack, onDelete }) {
       if (d.id != null && d.context) digestById[d.id] = d.context;
     }
   }
+
+  // Build O(1) lookup: gameTime → links where this anchor is from/to endpoint.
+  // Used by anchor row render to find badges and highlight state.
+  const linksByFrom = {};
+  const linksByTo   = {};
+  for (const link of anchorLinks) {
+    (linksByFrom[link.from] ||= []).push(link);
+    (linksByTo[link.to]     ||= []).push(link);
+  }
+  function linkKey(link) { return `${link.rule}-${link.from}-${link.to}`; }
 
   // For OpenDota imports: how many deaths couldn't be located in any kills_log
   // (tower/creep/Roshan kills have no timestamp entry). Uses match row as source of truth
@@ -510,11 +566,11 @@ function MatchDetail({ matchId, onBack, onDelete }) {
 
       {/* Anchor chain — 关键时刻 (empty → whole block hidden; GSI matches without timeseries silently degrade) */}
       {anchorChain.length > 0 && (
-        <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px' }}>
+        <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '12px' }}>
           <div style={{ fontSize: '12px', color: '#f0883e', fontWeight: '600', marginBottom: '10px' }}>
             关键时刻
             <span style={{ fontSize: '10px', color: '#8b949e', fontWeight: '400', marginLeft: '8px' }}>
-              逻辑链 · {anchorChain.length} 个锚点
+              {anchorChain.length} 个锚点
             </span>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -524,21 +580,60 @@ function MatchDetail({ matchId, onBack, onDelete }) {
               const icon = anchor.kind === 'death' ? '💀'
                 : anchor.kind === 'momentum' ? (anchor.type === 'momentum_gain' ? '📈' : '📉')
                 : '⏱️';
+
+              // Causal link data for this anchor
+              const fromLinks = (linksByFrom[anchor.gameTime] || []).filter((l) => {
+                const meta = RELATION_META[l.relation];
+                return meta && meta.fromKind === anchor.kind;
+              });
+              const toLinks = (linksByTo[anchor.gameTime] || []).filter((l) => {
+                const meta = RELATION_META[l.relation];
+                return meta && meta.toKind === anchor.kind;
+              });
+              const activeLinkForRow = [...fromLinks, ...toLinks].find(
+                (l) => linkKey(l) === activeLink
+              ) || null;
+              const isHighlighted = activeLinkForRow !== null;
+
               return (
-                <div key={idx}>
+                <div key={idx} style={{
+                  borderRadius: '6px',
+                  background: isHighlighted ? '#79c0ff09' : 'transparent',
+                  border: `1px solid ${isHighlighted ? '#79c0ff33' : 'transparent'}`,
+                }}>
                   <div
                     onClick={() => setExpandedAnchors((prev) => {
                       const next = new Set(prev);
                       if (next.has(idx)) next.delete(idx); else next.add(idx);
                       return next;
                     })}
-                    style={{ padding: '5px 0', borderBottom: '1px solid #30363d22', display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
+                    style={{ padding: '5px 4px', borderBottom: '1px solid #30363d22', display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer', userSelect: 'none' }}
                   >
                     <span style={{ fontSize: '11px', color: '#8b949e', flexShrink: 0, width: '36px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                       {formatTime(anchor.gameTime)}
                     </span>
                     <span style={{ fontSize: '13px', flexShrink: 0 }}>{icon}</span>
                     <span style={{ fontSize: '12px', color: aColor, flex: 1, lineHeight: '1.4' }}>{anchor.summary}</span>
+                    {/* Causal badges — from end */}
+                    {fromLinks.map((l) => (
+                      <CausalBadge
+                        key={linkKey(l)}
+                        text={RELATION_META[l.relation]?.fromBadge || '⚡ 因果连接'}
+                        confidence={l.confidence}
+                        isActive={linkKey(l) === activeLink}
+                        onClick={(e) => { e.stopPropagation(); setActiveLink((prev) => prev === linkKey(l) ? null : linkKey(l)); }}
+                      />
+                    ))}
+                    {/* Causal badges — to end */}
+                    {toLinks.map((l) => (
+                      <CausalBadge
+                        key={linkKey(l) + '_to'}
+                        text={RELATION_META[l.relation]?.toBadge(l) || '← 因果连接'}
+                        confidence={l.confidence}
+                        isActive={linkKey(l) === activeLink}
+                        onClick={(e) => { e.stopPropagation(); setActiveLink((prev) => prev === linkKey(l) ? null : linkKey(l)); }}
+                      />
+                    ))}
                     <span style={{ fontSize: '11px', color: '#8b949e55', flexShrink: 0 }}>{isExpanded ? '▾' : '▸'}</span>
                   </div>
                   {isExpanded && (
@@ -593,6 +688,102 @@ function MatchDetail({ matchId, onBack, onDelete }) {
                           )}
                         </div>
                       )}
+                    </div>
+                  )}
+                  {/* Inline evidence panel — appears when this anchor is the active link endpoint */}
+                  {activeLinkForRow && (
+                    <div style={{ marginLeft: '46px', marginTop: '2px', marginBottom: '6px', padding: '6px 8px', background: '#161b22', border: '1px solid #79c0ff22', borderRadius: '6px', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <div style={{ fontSize: '10px', color: '#79c0ff', marginBottom: '1px' }}>因果证据</div>
+                      <div>死亡后 <span style={{ color: '#e6edf3' }}>{activeLinkForRow.evidence.gap_seconds}</span> 秒经济转跌</div>
+                      {activeLinkForRow.evidence.chain_deaths > 0 && (
+                        <div>连续死亡 <span style={{ color: '#f85149' }}>{activeLinkForRow.evidence.chain_deaths}</span> 次</div>
+                      )}
+                      {activeLinkForRow.evidence.economy_significant && (
+                        <div style={{ color: '#e3b341' }}>死亡时经济已显著恶化</div>
+                      )}
+                      <div>崩盘幅度 <span style={{ color: '#e3b341' }}>{Math.round(activeLinkForRow.evidence.magnitude)}</span> 金币/分钟</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Logic chain cards — 逻辑链 (hidden when no links; GSI matches degrade silently) */}
+      {anchorLinks.length > 0 && (
+        <div style={{ background: '#0d1117', borderRadius: '8px', padding: '14px', marginBottom: '20px' }}>
+          <div style={{ fontSize: '12px', color: '#bc8cff', fontWeight: '600', marginBottom: '10px' }}>
+            逻辑链
+            <span style={{ fontSize: '10px', color: '#8b949e', fontWeight: '400', marginLeft: '8px' }}>
+              {anchorLinks.length} 条因果连接
+            </span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {[...anchorLinks].sort((a, b) => a.from - b.from).map((link) => {
+              const key  = linkKey(link);
+              const meta = RELATION_META[link.relation];
+              const title = meta
+                ? meta.cardTitle(link)
+                : `${formatTime(link.from)} → ${formatTime(link.to)}（${link.relation}）`;
+              const cs         = CONFIDENCE_STYLE[link.confidence] || CONFIDENCE_STYLE.weak;
+              const isActive   = activeLink === key;
+              const isCardExp  = expandedCards.has(key);
+              return (
+                <div
+                  key={key}
+                  onClick={() => setActiveLink((prev) => prev === key ? null : key)}
+                  style={{
+                    background: isActive ? '#1a1535' : '#161b22',
+                    border: `1px solid ${isActive ? cs.border : '#30363d44'}`,
+                    borderRadius: '6px', padding: '8px 10px', cursor: 'pointer',
+                    transition: 'border-color 0.15s',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '12px', color: isActive ? cs.color : '#c9d1d9', flex: 1, fontWeight: '600' }}>
+                      {title}
+                    </span>
+                    <span style={{ fontSize: '10px', color: cs.color, background: cs.bg, padding: '1px 7px', borderRadius: '8px', border: `1px solid ${cs.border}`, flexShrink: 0 }}>
+                      {cs.label}
+                    </span>
+                    <span
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setExpandedCards((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(key)) next.delete(key); else next.add(key);
+                          return next;
+                        });
+                      }}
+                      style={{ fontSize: '11px', color: '#8b949e55', cursor: 'pointer', flexShrink: 0, padding: '0 4px' }}
+                    >
+                      {isCardExp ? '▾' : '▸'}
+                    </span>
+                  </div>
+                  {isCardExp && (
+                    <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #30363d33', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                      <div>
+                        死亡后{' '}
+                        <span style={{ color: '#e6edf3' }}>{link.evidence.gap_seconds}</span>
+                        {' 秒经济转跌'}
+                      </div>
+                      {link.evidence.chain_deaths > 0 && (
+                        <div>
+                          连续死亡{' '}
+                          <span style={{ color: '#f85149' }}>{link.evidence.chain_deaths}</span>
+                          {' 次'}
+                        </div>
+                      )}
+                      {link.evidence.economy_significant && (
+                        <div style={{ color: '#e3b341' }}>死亡时经济已显著恶化</div>
+                      )}
+                      <div>
+                        崩盘幅度{' '}
+                        <span style={{ color: '#e3b341' }}>{Math.round(link.evidence.magnitude)}</span>
+                        {' 金币/分钟'}
+                      </div>
                     </div>
                   )}
                 </div>

@@ -973,6 +973,66 @@ Determines whether a death anchor carries measurable downstream consequences ava
 
 `isLethalDeath`, `scoreA1`, `ruleA1`, `GAP_THRESHOLD`
 
+### Backend wiring (`server/index.js`)
+
+After building the anchor chain, the `/anchor-chain` endpoint iterates over all death-then-momentum pairs within `GAP_THRESHOLD` seconds, calls `ruleA1(a, b)`, and collects the results into a `links[]` array. The endpoint now returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches).
+
+Each link shape:
+```js
+{ from, to, rule, relation, confidence, evidence }
+// from/to: gameTime in seconds
+// relation: 'death_triggered_collapse'
+// confidence: 'strong' | 'medium' | 'weak'
+// evidence: { gap_seconds, death_severity, chain_deaths, economy_significant, lethal, slope_after, magnitude }
+```
+
+### Frontend integration (`MatchHistory.jsx`)
+
+**Module-level constants (add to `RELATION_META` for new rules):**
+```js
+const RELATION_META = {
+  death_triggered_collapse: {
+    fromKind:  'death',
+    toKind:    'momentum',
+    fromBadge: '⚡ 引发经济崩盘',        // shown on the death anchor
+    toBadge:   (l) => `← 源于 mm:ss 的死亡`,  // shown on the momentum_loss anchor
+    cardTitle: (l) => `mm:ss 阵亡 → mm:ss 经济崩盘`,
+  },
+  // Add A2, A3… here; all frontends pick them up automatically
+};
+```
+
+**`CONFIDENCE_STYLE`** maps `'strong' | 'medium' | 'weak'` → `{ color, bg, border, label }`. Strong uses red, medium amber, weak muted grey.
+
+**`CausalBadge`** — inline span component. Renders with solid background (strong/medium) or outline-only (weak). Active state (outline glow + bold) when its link is `activeLink`.
+
+**State in `MatchDetail`:**
+- `anchorLinks` — from API `links[]`; empty until fetch completes
+- `activeLink` — string key `"${rule}-${from}-${to}"` or null; toggles on badge/card click
+- `expandedCards` — Set of card keys whose evidence panel is open
+
+**Preprocessing (computed each render, not state):**
+- `linksByFrom[gameTime]` and `linksByTo[gameTime]` — O(1) lookup per anchor row
+- `linkKey(link)` — stable string key `${rule}-${from}-${to}`
+
+**Anchor chain row enhancements:**
+- Highlighted border/bg (`#79c0ff33` / `#79c0ff09`) when the row's gameTime participates in `activeLink`
+- `CausalBadge` inserted between summary text and expand arrow
+  - `fromLinks` → `fromBadge` text; `toLinks` → `toBadge(link)` text
+  - Kind-filtered disambiguation: same-gameTime anchors of different kinds don't steal each other's badges
+- **Inline evidence panel** appears below the row (regardless of expand state) when `activeLink` targets this anchor. Shows: gap_seconds, chain_deaths (if >0), economy_significant (if true), magnitude.
+
+**`逻辑链` cards section** (rendered after the anchor chain block):
+- Hidden when `anchorLinks` is empty — no error, no empty state UI
+- Each card: title from `cardTitle(link)`, confidence label, expand arrow (independent of `activeLink`)
+- Clicking card header → toggle `activeLink` (highlights both timeline ends)
+- Clicking expand arrow → toggle `expandedCards` (shows evidence breakdown, stops propagation)
+- Evidence items: gap_seconds, chain_deaths (if >0), economy_significant (if true), magnitude
+
+**Degradation:**
+- GSI matches / unparsed imports → `links: []` → no badges, no cards, existing behavior unchanged
+- `anchor-chain` fetch failure → both `anchorChain` and `anchorLinks` stay `[]` → full block absent
+
 ---
 
 ## Future roadmap
