@@ -10,7 +10,7 @@ const src  = fs.readFileSync(
   'utf8'
 );
 
-const { isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD } = require('../anchorLinker');
+const { isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD, scoreA2, ruleA2, A2_MAX_GAP } = require('../anchorLinker');
 
 let passed = 0;
 let failed = 0;
@@ -60,7 +60,7 @@ function makeDeathAnchor({ severity = 'danger', context = null, gameTime = 1000 
   };
 }
 
-function makeContext({ chainDeaths = [], economy = null } = {}) {
+function makeContext({ chainDeaths = [], economy = null, diedWithBuyback = null } = {}) {
   return {
     windowStart:       995,
     windowEnd:         1060,
@@ -68,10 +68,26 @@ function makeContext({ chainDeaths = [], economy = null } = {}) {
     killsNearby:       [],
     objectivesLost:    [],
     objectivesGained:  [],
-    diedWithBuyback:   null,
+    diedWithBuyback,
     majorObjectiveLost: false,
     economy: economy !== undefined ? economy : { available: false, minuteAtDeath: null,
       advBefore: null, advAfter: null, delta: null, significant: false },
+  };
+}
+
+function makeSpikeAnchor({
+  gameTime = 1100, type = 'spike_deficit', bucket = 'survivability',
+  myItem = 'black_king_bar', enemyItem = 'black_king_bar', enemyHero = '半人马战行者（Centaur Warrunner）',
+  enemyTime = 900, delta = 200, significant = true,
+} = {}) {
+  return {
+    gameTime,
+    minute:   Math.floor(gameTime / 60),
+    kind:     'spike',
+    type,
+    severity: type === 'spike_deficit' ? 'warning' : 'success',
+    summary:  'xx:xx 生存 强势期落后敌方 xx:xx',
+    detail:   { bucket, myItem, myTime: gameTime, enemyHero, enemyItem, enemyTime, delta, type, significant },
   };
 }
 
@@ -352,6 +368,170 @@ console.log('\n── GAP_THRESHOLD export ────────────�
 
 assert(typeof GAP_THRESHOLD === 'number',  'GAP_THRESHOLD is a number');
 assert(GAP_THRESHOLD > 0,                  'GAP_THRESHOLD is positive');
+
+// ── A2_MAX_GAP constant ─────────────────────────────────────────────────────
+
+console.log('\n── A2_MAX_GAP export ─────────────────────────────────────────────────');
+
+assert(typeof A2_MAX_GAP === 'number', 'A2_MAX_GAP is a number');
+assert(A2_MAX_GAP > 0,                 'A2_MAX_GAP is positive');
+
+// ── scoreA2 ──────────────────────────────────────────────────────────────────
+
+console.log('\n── scoreA2: four-quadrant scoring ───────────────────────────────────');
+
+assert(scoreA2({ gap: 200, hadBuyback: true,  econSignificant: false, spikeSignificant: true  }) === 'strong',
+  'hadBuyback && spikeSignificant → strong');
+
+assert(scoreA2({ gap: 100, hadBuyback: false, econSignificant: true,  spikeSignificant: false }) === 'strong',
+  'econSignificant && gap<=120 → strong');
+
+assert(scoreA2({ gap: 100, hadBuyback: true,  econSignificant: false, spikeSignificant: false }) === 'strong',
+  'hadBuyback && gap<=120 → strong (even without spikeSignificant)');
+
+assert(scoreA2({ gap: 200, hadBuyback: false, econSignificant: true,  spikeSignificant: false }) === 'medium',
+  'econSignificant alone, gap>120, no buyback/spike → medium');
+
+assert(scoreA2({ gap: 200, hadBuyback: false, econSignificant: false, spikeSignificant: true  }) === 'medium',
+  'spikeSignificant alone → medium');
+
+assert(scoreA2({ gap: 200, hadBuyback: false, econSignificant: false, spikeSignificant: false }) === 'weak',
+  'no signals → weak');
+
+// Importability assertion: OD imports never have hadBuyback (always null/false),
+// so econSignificant must be able to reach strong/medium alone — verified above.
+assert(scoreA2({ gap: 50, hadBuyback: false, econSignificant: true, spikeSignificant: false }) === 'strong',
+  'OD-import reachability: econSignificant + close gap, no buyback → strong');
+
+// ── ruleA2: gate checks ──────────────────────────────────────────────────────
+
+console.log('\n── ruleA2: gate 1 — anchorA must be a death ─────────────────────────');
+
+const spikeDeficitB = makeSpikeAnchor({ gameTime: 1100 });
+assert(ruleA2(notDeath, spikeDeficitB) === null,
+  'gate 1: anchorA.kind !== death → null');
+
+console.log('\n── ruleA2: gate 2 — anchorB must be spike_deficit ───────────────────');
+
+const deathA2 = makeDeathAnchor({
+  gameTime: 1000,
+  context:  makeContext({ diedWithBuyback: true }),
+});
+
+const spikeLead = makeSpikeAnchor({ gameTime: 1100, type: 'spike_lead' });
+assert(ruleA2(deathA2, spikeLead) === null,
+  'gate 2: anchorB.type = spike_lead → null');
+
+assert(ruleA2(deathA2, momentumB) === null,
+  'gate 2: anchorB.kind = momentum (not spike) → null');
+
+console.log('\n── ruleA2: gate 3 — gap must be in (0, A2_MAX_GAP] ──────────────────');
+
+const spikeBefore = makeSpikeAnchor({ gameTime: 900 }); // before deathA2 at 1000
+assert(ruleA2(deathA2, spikeBefore) === null,
+  'gate 3: spike before death (negative gap) → null');
+
+const spikeAtSameTime = makeSpikeAnchor({ gameTime: 1000 });
+assert(ruleA2(deathA2, spikeAtSameTime) === null,
+  'gate 3: gap = 0 → null (must be strictly after, unlike A1)');
+
+const spikeAtLimit = makeSpikeAnchor({ gameTime: 1000 + A2_MAX_GAP });
+assert(ruleA2(deathA2, spikeAtLimit) !== null,
+  `gate 3: gap = A2_MAX_GAP (${A2_MAX_GAP}s) → valid link`);
+
+const spikeOverLimit = makeSpikeAnchor({ gameTime: 1000 + A2_MAX_GAP + 1 });
+assert(ruleA2(deathA2, spikeOverLimit) === null,
+  'gate 3: gap > A2_MAX_GAP → null');
+
+console.log('\n── ruleA2: domain check ① — death must be costly enough ────────────');
+
+const deathNoCost = makeDeathAnchor({
+  gameTime: 1000,
+  context:  makeContext({ diedWithBuyback: false }),
+});
+assert(ruleA2(deathNoCost, spikeDeficitB) === null,
+  'no buyback and no economy signal → null (not costly enough)');
+
+const deathEconSig = makeDeathAnchor({
+  gameTime: 1000,
+  context:  makeContext({
+    diedWithBuyback: false,
+    economy: { available: true, minuteAtDeath: 16, advBefore: 1500, advAfter: 200, delta: -1300, significant: true },
+  }),
+});
+assert(ruleA2(deathEconSig, spikeDeficitB) !== null,
+  'economy.significant alone (no buyback) → costly enough → link');
+
+console.log('\n── ruleA2: domain check ② — item must complete after the death ★────');
+
+const spikeCompletedBeforeDeath = makeSpikeAnchor({ gameTime: 1000 + 50 });
+// Manually desync detail.myTime from anchor gameTime to isolate check ② from gate 3.
+const spikeDesynced = { ...spikeCompletedBeforeDeath, detail: { ...spikeCompletedBeforeDeath.detail, myTime: 900 } };
+assert(ruleA2(deathA2, spikeDesynced) === null,
+  'myTime <= death gameTime (item completed before death) → null ★');
+
+const spikeNullMyTime = { ...spikeDeficitB, detail: { ...spikeDeficitB.detail, myTime: null } };
+assert(ruleA2(deathA2, spikeNullMyTime) === null,
+  'myTime == null → null (cannot verify)');
+
+console.log('\n── ruleA2: returned link shape ───────────────────────────────────────');
+
+const linkA2 = ruleA2(deathA2, spikeDeficitB);
+assert(linkA2 !== null,                          'full-pass link: not null');
+assert(linkA2.rule === 'A2',                      'link: rule = A2');
+assert(Array.isArray(linkA2.anchors),              'link: anchors is array');
+assert(linkA2.anchors[0] === deathA2,              'link: anchors[0] is deathA2');
+assert(linkA2.anchors[1] === spikeDeficitB,        'link: anchors[1] is spikeDeficitB');
+assert(['strong', 'medium', 'weak'].includes(linkA2.score),
+  'link: score is one of strong/medium/weak');
+
+console.log('\n── ruleA2: evidence fields ───────────────────────────────────────────');
+
+const evidA2 = linkA2.evidence;
+assert(evidA2.gap_seconds === 100,                 'evidence: gap_seconds = 1100 - 1000 = 100');
+assert(evidA2.economy_delta === null,              'evidence: economy_delta = null (deathA2 has no economy data)');
+assert(evidA2.economy_significant === false,       'evidence: economy_significant = false');
+assert(evidA2.had_buyback === true,                'evidence: had_buyback = true (deathA2 diedWithBuyback=true)');
+assert(evidA2.my_item === 'black_king_bar',        'evidence: my_item = black_king_bar');
+assert(evidA2.my_item_time === 1100,               'evidence: my_item_time = 1100');
+assert(evidA2.enemy_item === 'black_king_bar',     'evidence: enemy_item = black_king_bar');
+assert(evidA2.enemy_item_time === 900,             'evidence: enemy_item_time = 900');
+
+const linkA2Econ = ruleA2(deathEconSig, spikeDeficitB);
+assert(linkA2Econ.evidence.economy_delta === -1300, 'evidence: economy_delta = -1300 when economy data present');
+assert(linkA2Econ.evidence.economy_significant === true, 'evidence: economy_significant = true');
+assert(linkA2Econ.evidence.had_buyback === false,   'evidence: had_buyback = false when diedWithBuyback=false');
+
+console.log('\n── ruleA2: scoreA2 consistency ────────────────────────────────────────');
+
+// hadBuyback + spikeSignificant(true, from spikeDeficitB) + close gap → strong
+assert(linkA2.score === 'strong',
+  'hadBuyback + spikeSignificant + gap=100 (<=120) → strong');
+
+// Not significant spike, no buyback, only econSignificant, gap > 120 → medium
+const spikeNotSignificant = makeSpikeAnchor({ gameTime: 1000 + 200, significant: false });
+const linkA2Medium = ruleA2(deathEconSig, spikeNotSignificant);
+assert(linkA2Medium.score === 'medium',
+  'econSignificant only, gap=200 (>120), spike not significant → medium');
+
+// Neither costly signal barely passes gate (econSignificant true) but weak scoring path
+const deathBarelyCostly = makeDeathAnchor({
+  gameTime: 1000,
+  context: makeContext({
+    diedWithBuyback: false,
+    economy: { available: true, minuteAtDeath: 16, advBefore: 1500, advAfter: 1450, delta: -50, significant: false },
+  }),
+});
+// This death fails costlyEnough (economy not significant, no buyback) — should be null, not weak
+assert(ruleA2(deathBarelyCostly, spikeDeficitB) === null,
+  'costlyEnough gate: economy present but not significant, no buyback → null (gate ①, not a weak score)');
+
+console.log('\n── ruleA2: does not interfere with ruleA1 (death→momentum untouched) ─');
+
+assert(ruleA1(deathA2, momentumB) !== null,
+  'ruleA1 still links death→momentum_loss independently of ruleA2');
+assert(ruleA2(deathA2, momentumB) === null,
+  'ruleA2 correctly rejects a momentum anchor as anchorB');
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

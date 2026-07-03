@@ -52,6 +52,13 @@ const RELATION_META = {
     toBadge:   (l) => `← 源于 ${formatTime(l.from)} 的死亡`,
     cardTitle: (l) => `${formatTime(l.from)} 阵亡 → ${formatTime(l.to)} 经济崩盘`,
   },
+  death_delayed_spike: {
+    fromKind:  'death',
+    toKind:    'spike',
+    fromBadge: '⚡ 耽误关键装',
+    toBadge:   (l) => `← 源于 ${formatTime(l.from)} 的死亡`,
+    cardTitle: (l) => `${formatTime(l.from)} 阵亡 → ${formatTime(l.to)} ${itemDisplayName('item_' + l.evidence.my_item)} 落后`,
+  },
 };
 
 const CONFIDENCE_STYLE = {
@@ -269,6 +276,49 @@ function MatchDetail({ matchId, onBack, onDelete }) {
     ? events.filter((e) => e.type === 'hero_death' && e.snapshot?.source === 'opendota_import').length
     : 0;
   const missingDeaths = isImport ? Math.max(0, (m.deaths || 0) - reconstructedDeaths) : 0;
+
+  // Shared renderer for a causal link's evidence fields — driven by field
+  // presence, not by which rule produced the link, so new rules (A2, A3…)
+  // render automatically without touching this function.
+  // Called from the anchor-row inline panel and the 逻辑链 card expansion.
+  function renderLinkEvidence(evidence) {
+    const rows = [];
+    if (evidence.gap_seconds != null) {
+      rows.push(<div key="gap">间隔 <span style={{ color: '#e6edf3' }}>{evidence.gap_seconds}</span> 秒</div>);
+    }
+    if (evidence.chain_deaths > 0) {
+      rows.push(<div key="chain">连续死亡 <span style={{ color: '#f85149' }}>{evidence.chain_deaths}</span> 次</div>);
+    }
+    if (evidence.economy_significant) {
+      rows.push(<div key="econsig" style={{ color: '#e3b341' }}>死亡时经济已显著恶化</div>);
+    }
+    if (evidence.economy_delta != null) {
+      rows.push(<div key="econdelta">经济变化 <span style={{ color: evidence.economy_delta < 0 ? '#f85149' : '#56d364' }}>{evidence.economy_delta > 0 ? '+' : ''}{Math.round(evidence.economy_delta)}</span> 金币</div>);
+    }
+    if (evidence.magnitude != null) {
+      rows.push(<div key="magnitude">崩盘幅度 <span style={{ color: '#e3b341' }}>{Math.round(evidence.magnitude)}</span> 金币/分钟</div>);
+    }
+    if (evidence.had_buyback) {
+      rows.push(<div key="buyback" style={{ color: '#e3b341' }}>死亡时可支付回城（buyback 可用）</div>);
+    }
+    if (evidence.my_item != null) {
+      rows.push(
+        <div key="myitem">
+          延后装备 <span style={{ color: '#79c0ff' }}>{itemDisplayName(`item_${evidence.my_item}`)}</span>
+          {evidence.my_item_time != null && <> @ <span style={{ color: '#e6edf3' }}>{formatTime(evidence.my_item_time)}</span></>}
+        </div>
+      );
+    }
+    if (evidence.enemy_item != null) {
+      rows.push(
+        <div key="enemyitem">
+          敌方对应装备 <span style={{ color: '#f0883e' }}>{itemDisplayName(`item_${evidence.enemy_item}`)}</span>
+          {evidence.enemy_item_time != null && <> @ <span style={{ color: '#e6edf3' }}>{formatTime(evidence.enemy_item_time)}</span></>}
+        </div>
+      );
+    }
+    return rows;
+  }
 
   // Shared renderer for the death battlefield context block.
   // Called from renderEventRow (event timeline) and anchor chain detail expansion.
@@ -694,14 +744,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
                   {activeLinkForRow && (
                     <div style={{ marginLeft: '46px', marginTop: '2px', marginBottom: '6px', padding: '6px 8px', background: '#161b22', border: '1px solid #79c0ff22', borderRadius: '6px', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '3px' }}>
                       <div style={{ fontSize: '10px', color: '#79c0ff', marginBottom: '1px' }}>因果证据</div>
-                      <div>死亡后 <span style={{ color: '#e6edf3' }}>{activeLinkForRow.evidence.gap_seconds}</span> 秒经济转跌</div>
-                      {activeLinkForRow.evidence.chain_deaths > 0 && (
-                        <div>连续死亡 <span style={{ color: '#f85149' }}>{activeLinkForRow.evidence.chain_deaths}</span> 次</div>
-                      )}
-                      {activeLinkForRow.evidence.economy_significant && (
-                        <div style={{ color: '#e3b341' }}>死亡时经济已显著恶化</div>
-                      )}
-                      <div>崩盘幅度 <span style={{ color: '#e3b341' }}>{Math.round(activeLinkForRow.evidence.magnitude)}</span> 金币/分钟</div>
+                      {renderLinkEvidence(activeLinkForRow.evidence)}
                     </div>
                   )}
                 </div>
@@ -764,26 +807,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
                   </div>
                   {isCardExp && (
                     <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #30363d33', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      <div>
-                        死亡后{' '}
-                        <span style={{ color: '#e6edf3' }}>{link.evidence.gap_seconds}</span>
-                        {' 秒经济转跌'}
-                      </div>
-                      {link.evidence.chain_deaths > 0 && (
-                        <div>
-                          连续死亡{' '}
-                          <span style={{ color: '#f85149' }}>{link.evidence.chain_deaths}</span>
-                          {' 次'}
-                        </div>
-                      )}
-                      {link.evidence.economy_significant && (
-                        <div style={{ color: '#e3b341' }}>死亡时经济已显著恶化</div>
-                      )}
-                      <div>
-                        崩盘幅度{' '}
-                        <span style={{ color: '#e3b341' }}>{Math.round(link.evidence.magnitude)}</span>
-                        {' 金币/分钟'}
-                      </div>
+                      {renderLinkEvidence(link.evidence)}
                     </div>
                   )}
                 </div>

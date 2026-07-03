@@ -73,7 +73,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/data/genericPowerSpikeItems.js` | 6-bucket universal power-spike item list for enemy comparison (distinct from hero-specific `offlaneHeroProfiles.js` keyItems) |
 | `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas, decoupled from event/death/digest/timeseries/momentum modules |
 | `server/anchorChain.js` | Pure convergence layer: maps the three anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
-| `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; exports `GAP_THRESHOLD`. |
+| `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; exports `GAP_THRESHOLD`, `A2_MAX_GAP`. |
 
 ---
 
@@ -369,12 +369,12 @@ server/tests/
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
   openDotaSpikeWindowScanner.test.js   89 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name
   anchorChain.test.js                 102 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
-  anchorLinker.test.js                 68 assertions — decoupling (no scanner imports), isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency)
+  anchorLinker.test.js                 110 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1161 assertions must pass before merging any change.
+All 1203 assertions must pass before merging any change.
 
 ---
 
@@ -969,21 +969,62 @@ Determines whether a death anchor carries measurable downstream consequences ava
 }
 ```
 
+### Rule A2: death → spike_deficit
+
+Hypothesis: a hero death was costly enough to delay a key item, causing the player to fall behind the matching enemy's power spike.
+
+**Three gates:**
+1. `anchorA.kind === 'death'`
+2. `anchorB.kind === 'spike' && anchorB.type === 'spike_deficit'`
+3. `gap = anchorB.gameTime − anchorA.gameTime` in `(0, A2_MAX_GAP]` (default 240 s) — strictly after, unlike A1's `[0, …]`
+
+**Two domain checks (beyond the gates), both required:**
+1. **`costlyEnough`** — `context.diedWithBuyback === true` (GSI only) **or** `context.economy.available && context.economy.significant`. There is no `gold_lost` field on the death snapshot (net worth isn't captured), so the economy-timeseries `significant` flag is used as the available proxy for "this death actually cost something."
+2. **`myTime` check** — `anchorB.detail.myTime` must be non-null and strictly greater than `anchorA.gameTime`; otherwise the item was already complete before (or exactly at) the death and this death can't have delayed it.
+
+Returns `null` if any gate/check fails; otherwise a link object `{ rule, anchors, score, evidence }` (same shape as `ruleA1`'s return, so the endpoint can collect both into one `links[]` array).
+
+**Known limitation:** `diedWithBuyback` is always `null` for OpenDota-imported matches (no gold data in the snapshot). A2 links on imported matches therefore rely entirely on `context.economy.significant` to satisfy `costlyEnough` and to reach `'strong'`/`'medium'` — verified by a dedicated "OD-import reachability" test in `anchorLinker.test.js`.
+
+### `scoreA2({ gap, hadBuyback, econSignificant, spikeSignificant }) → 'strong' | 'medium' | 'weak'`
+
+| Condition | score |
+|-----------|-------|
+| `hadBuyback && spikeSignificant` | **strong** |
+| `(econSignificant \|\| hadBuyback) && gap ≤ 120` | **strong** |
+| `spikeSignificant \|\| econSignificant` | medium |
+| none of the above | weak |
+
+### `evidence` fields (A2)
+
+```js
+{
+  gap_seconds:         number,        // anchorB.gameTime − anchorA.gameTime
+  economy_delta:       number|null,   // ctx.economy.delta, or null if unavailable
+  economy_significant: boolean,       // ctx.economy.available && ctx.economy.significant
+  had_buyback:         boolean,       // ctx.diedWithBuyback === true (GSI only)
+  my_item:             string,        // anchorB.detail.myItem
+  my_item_time:        number,        // anchorB.detail.myTime
+  enemy_item:          string|null,   // anchorB.detail.enemyItem
+  enemy_item_time:     number|null,   // anchorB.detail.enemyTime
+}
+```
+
 ### Exported API
 
-`isLethalDeath`, `scoreA1`, `ruleA1`, `GAP_THRESHOLD`
+`isLethalDeath`, `scoreA1`, `ruleA1`, `GAP_THRESHOLD`, `scoreA2`, `ruleA2`, `A2_MAX_GAP`
 
 ### Backend wiring (`server/index.js`)
 
-After building the anchor chain, the `/anchor-chain` endpoint iterates over all death-then-momentum pairs within `GAP_THRESHOLD` seconds, calls `ruleA1(a, b)`, and collects the results into a `links[]` array. The endpoint now returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches).
+After building the anchor chain, the `/anchor-chain` endpoint iterates over all death-then-later-anchor pairs within `GAP_THRESHOLD` seconds (the larger of the two rules' windows — `A2_MAX_GAP` is smaller and checked internally by `ruleA2`), calls both `ruleA1(a, b)` and `ruleA2(a, b)` on each pair, and collects any non-null results into a `links[]` array. The endpoint now returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches). This is a minimal inline extension — no dispatcher layer was introduced, since A1 was already inline in the endpoint.
 
 Each link shape:
 ```js
 { from, to, rule, relation, confidence, evidence }
 // from/to: gameTime in seconds
-// relation: 'death_triggered_collapse'
+// relation: 'death_triggered_collapse' (A1) | 'death_delayed_spike' (A2)
 // confidence: 'strong' | 'medium' | 'weak'
-// evidence: { gap_seconds, death_severity, chain_deaths, economy_significant, lethal, slope_after, magnitude }
+// evidence: rule-specific — see the `evidence` fields tables above
 ```
 
 ### Frontend integration (`MatchHistory.jsx`)
@@ -998,7 +1039,14 @@ const RELATION_META = {
     toBadge:   (l) => `← 源于 mm:ss 的死亡`,  // shown on the momentum_loss anchor
     cardTitle: (l) => `mm:ss 阵亡 → mm:ss 经济崩盘`,
   },
-  // Add A2, A3… here; all frontends pick them up automatically
+  death_delayed_spike: {
+    fromKind:  'death',
+    toKind:    'spike',
+    fromBadge: '⚡ 耽误关键装',
+    toBadge:   (l) => `← 源于 mm:ss 的死亡`,
+    cardTitle: (l) => `mm:ss 阵亡 → mm:ss <装备名> 落后`,  // item name via itemDisplayName(l.evidence.my_item)
+  },
+  // Add A3… here; all frontends pick them up automatically
 };
 ```
 
@@ -1020,14 +1068,14 @@ const RELATION_META = {
 - `CausalBadge` inserted between summary text and expand arrow
   - `fromLinks` → `fromBadge` text; `toLinks` → `toBadge(link)` text
   - Kind-filtered disambiguation: same-gameTime anchors of different kinds don't steal each other's badges
-- **Inline evidence panel** appears below the row (regardless of expand state) when `activeLink` targets this anchor. Shows: gap_seconds, chain_deaths (if >0), economy_significant (if true), magnitude.
+- **Inline evidence panel** appears below the row (regardless of expand state) when `activeLink` targets this anchor. Rendered by the shared `renderLinkEvidence(evidence)` helper, which displays each field **by presence, not by rule** — new rules with new evidence shapes render automatically without touching this function. Currently recognized fields: `gap_seconds`, `chain_deaths` (if >0), `economy_significant` (if true), `economy_delta` (if non-null), `magnitude` (if non-null), `had_buyback` (if true), `my_item`/`my_item_time`, `enemy_item`/`enemy_item_time` (item names resolved via `itemDisplayName`).
 
 **`逻辑链` cards section** (rendered after the anchor chain block):
 - Hidden when `anchorLinks` is empty — no error, no empty state UI
 - Each card: title from `cardTitle(link)`, confidence label, expand arrow (independent of `activeLink`)
 - Clicking card header → toggle `activeLink` (highlights both timeline ends)
 - Clicking expand arrow → toggle `expandedCards` (shows evidence breakdown, stops propagation)
-- Evidence items: gap_seconds, chain_deaths (if >0), economy_significant (if true), magnitude
+- Evidence breakdown uses the same `renderLinkEvidence(evidence)` helper as the inline panel — see field list above
 
 **Degradation:**
 - GSI matches / unparsed imports → `links: []` → no badges, no cards, existing behavior unchanged
@@ -1076,7 +1124,7 @@ dota-ai-coach/
 │   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
 │   ├── openDotaMomentumScanner.js     ← Pure: scanMomentumShifts(timeseries) — decoupled anchor scanner
 │   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor + buildAnchorChain()
-│   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 + GAP_THRESHOLD
+│   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 + GAP_THRESHOLD / A2_MAX_GAP
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -1104,7 +1152,7 @@ dota-ai-coach/
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
 │       ├── openDotaSpikeWindowScanner.test.js   ← 89 assertions (decoupling, spike_lead/deficit, multi-item per-item, null-delta unique, fastest enemy, sort, significant)
 │       ├── anchorChain.test.js                  ← 93 assertions (decoupling, all mappers, merge sort, tie-break, shape)
-│       ├── anchorLinker.test.js                 ← 68 assertions (decoupling, isLethalDeath, scoreA1, ruleA1 gates + evidence)
+│       ├── anchorLinker.test.js                 ← 110 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2 gates + evidence)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)
