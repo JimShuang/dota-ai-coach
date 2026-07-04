@@ -11,7 +11,7 @@ const { buildEconomyTimeseries } = require('./openDotaEconomyTimeseries');
 const { scanMomentumShifts } = require('./openDotaMomentumScanner');
 const { scanSpikeWindowDeltas } = require('./openDotaSpikeWindowScanner');
 const { buildAnchorChain } = require('./anchorChain');
-const { ruleA1, ruleA2, GAP_THRESHOLD } = require('./anchorLinker');
+const { linkAllAnchors } = require('./anchorLinker');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -297,43 +297,10 @@ app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
 
   const anchors = buildAnchorChain({ deaths, momentumShifts, spikeDeltas });
 
-  // Compute causal links: run ruleA1 (death→momentum_loss) and ruleA2
-  // (death→spike_deficit) over all death-anchor pairs within GAP_THRESHOLD
-  // (the larger of the two rules' windows). Anchors are gameTime-sorted, so
-  // we can break the inner loop early.
-  const links = [];
-  for (let i = 0; i < anchors.length; i++) {
-    const a = anchors[i];
-    if (a.kind !== 'death') continue;
-    for (let j = i + 1; j < anchors.length; j++) {
-      const b = anchors[j];
-      if (b.gameTime - a.gameTime > GAP_THRESHOLD) break;
-
-      const resultA1 = ruleA1(a, b);
-      if (resultA1) {
-        links.push({
-          from:       a.gameTime,
-          to:         b.gameTime,
-          rule:       resultA1.rule,
-          relation:   'death_triggered_collapse',
-          confidence: resultA1.score,
-          evidence:   resultA1.evidence,
-        });
-      }
-
-      const resultA2 = ruleA2(a, b);
-      if (resultA2) {
-        links.push({
-          from:       a.gameTime,
-          to:         b.gameTime,
-          rule:       resultA2.rule,
-          relation:   'death_delayed_spike',
-          confidence: resultA2.score,
-          evidence:   resultA2.evidence,
-        });
-      }
-    }
-  }
+  // Compute causal links: linkAllAnchors runs every rule (A1 death→momentum_loss,
+  // A2 death→spike_deficit, A3 death→death) over every ordered anchor pair and
+  // returns the endpoint-facing link shape directly.
+  const links = linkAllAnchors(anchors);
 
   res.json({ anchors, links });
 });

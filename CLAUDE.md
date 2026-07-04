@@ -73,7 +73,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/data/genericPowerSpikeItems.js` | 6-bucket universal power-spike item list for enemy comparison (distinct from hero-specific `offlaneHeroProfiles.js` keyItems) |
 | `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas, decoupled from event/death/digest/timeseries/momentum modules |
 | `server/anchorChain.js` | Pure convergence layer: maps the three anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
-| `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; exports `GAP_THRESHOLD`, `A2_MAX_GAP`. |
+| `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; `scoreA3()`, `ruleA3()` — links death anchors to following death anchors (chain death); `linkAllAnchors()` — dispatcher running all rules over every anchor pair; exports `GAP_THRESHOLD`, `A2_MAX_GAP`, `A3_MAX_GAP`, `A3_QUICK_GAP`. |
 
 ---
 
@@ -369,12 +369,12 @@ server/tests/
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
   openDotaSpikeWindowScanner.test.js   89 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name
   anchorChain.test.js                 102 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
-  anchorLinker.test.js                 110 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1)
+  anchorLinker.test.js                 175 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1); A3: scoreA3 (three tiers incl. OD-import reachability via isLethalDeath), ruleA3 (two gates, deathNumber/deathsAtDeath fallback, link shape, evidence fields, multi-death chain d1→d2/d2→d3/d1→d3); linkAllAnchors (degenerate inputs, all three rules fire independently with correct relation/from/to, no cross-rule interference)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1203 assertions must pass before merging any change.
+All 1268 assertions must pass before merging any change.
 
 ---
 
@@ -1010,19 +1010,60 @@ Returns `null` if any gate/check fails; otherwise a link object `{ rule, anchors
 }
 ```
 
+### Rule A3: death → death (chain death)
+
+Hypothesis: the player died again shortly after respawning — a chain death / over-eager re-engagement.
+
+**Data limitation (why this rule doesn't use respawn time):** the literal definition — "died again within 90s of respawning" — needs the respawn timestamp. `hero_respawn` is **GSI only** and is never reconstructed for OpenDota imports (there is no respawn anchor in the chain at all), and imported `hero_death` snapshots are minimal (`{killer, killerDisplayName, deathNumber, source}`) — no `level` field, so respawn wait time can't be looked up from a level table either. A3 therefore approximates "died again shortly after respawning" using the raw gap between the two deaths instead of a computed respawn time. No respawn time is estimated or guessed.
+
+**Two gates (no third domain check — the gap itself is the evidence):**
+1. `anchorA.kind === 'death'`
+2. `anchorB.kind === 'death'`
+3. `gap = anchorB.gameTime - anchorA.gameTime` in `(0, A3_MAX_GAP]` (default 150 s)
+
+Returns `null` if any gate fails; otherwise a link object `{ rule, anchors, score, evidence }` (same shape as `ruleA1`/`ruleA2`'s return).
+
+**`A3_MAX_GAP` / `A3_QUICK_GAP` constants:** `A3_MAX_GAP` (150 s) is approximately the average respawn wait (~60 s) plus the literal 90 s quick-death window; `A3_QUICK_GAP` (90 s) is the threshold below which a gap reads as "died almost immediately after respawn." Precision limit: late-game respawn waits can reach ~100 s, so a death that is genuinely "within 90s of respawn" late-game can produce a raw gap exceeding `A3_MAX_GAP` and be missed by this rule entirely. Tune the constant if this proves too tight in practice.
+
+### `scoreA3(firstDeath, gap) -> 'strong' | 'medium' | 'weak'`
+
+Reuses `isLethalDeath` — the same lethality signal as A1 — so OD-import deaths can reach `'strong'`/`'medium'` via `chainDeaths`/`economy.significant`, not just GSI's `critical` severity.
+
+| `quick` (gap <= `A3_QUICK_GAP`) | `lethal` (first death) | score |
+|--------------------------------|-------------------------|-------|
+| true | true | **strong** |
+| true | false | medium |
+| false | true | medium |
+| false | false | weak |
+
+### `evidence` fields (A3)
+
+```js
+{
+  gap_seconds:         number,      // anchorB.gameTime minus anchorA.gameTime
+  first_death_lethal:  boolean,     // isLethalDeath(anchorA)
+  first_death_number:  number|null, // anchorA.detail.snapshot.deathNumber, fallback .deathsAtDeath, else null
+  second_death_number: number|null, // anchorB.detail.snapshot.deathNumber, fallback .deathsAtDeath, else null
+}
+```
+
+`deathNumber` read path differs by source: OpenDota imports carry `snapshot.deathNumber`; GSI deaths carry `snapshot.deathsAtDeath` (mirrors `deathToAnchor` in `anchorChain.js`) — both are read defensively with a fallback chain.
+
+**Multi-death chain behavior:** `linkAllAnchors` (see below) applies A3 to every ordered anchor pair, not just adjacent deaths. Three deaths d1, d2, d3 each within `A3_MAX_GAP` of their neighbor can produce d1->d2, d2->d3, and (if the d1-to-d3 gap is also within `A3_MAX_GAP`) d1->d3 as three separate links — this is intentional, representing "repeated dying during this stretch" rather than a single discrete event. A future "adjacent deaths only" constraint could suppress the d1->d3 link; not implemented here.
+
 ### Exported API
 
-`isLethalDeath`, `scoreA1`, `ruleA1`, `GAP_THRESHOLD`, `scoreA2`, `ruleA2`, `A2_MAX_GAP`
+`isLethalDeath`, `scoreA1`, `ruleA1`, `GAP_THRESHOLD`, `scoreA2`, `ruleA2`, `A2_MAX_GAP`, `scoreA3`, `ruleA3`, `A3_MAX_GAP`, `A3_QUICK_GAP`, `linkAllAnchors`
 
 ### Backend wiring (`server/index.js`)
 
-After building the anchor chain, the `/anchor-chain` endpoint iterates over all death-then-later-anchor pairs within `GAP_THRESHOLD` seconds (the larger of the two rules' windows — `A2_MAX_GAP` is smaller and checked internally by `ruleA2`), calls both `ruleA1(a, b)` and `ruleA2(a, b)` on each pair, and collects any non-null results into a `links[]` array. The endpoint now returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches). This is a minimal inline extension — no dispatcher layer was introduced, since A1 was already inline in the endpoint.
+Adding a third rule converged link collection into a dispatcher, **`linkAllAnchors(anchors)`**, exported from `anchorLinker.js`. It replaces the endpoint's former inline double-loop (which handled only A1+A2). It iterates every ordered anchor pair (`a` before `b`, gameTime ascending), skips non-death `a` anchors (all three rules require `anchorA.kind === 'death'`), breaks the inner loop once the gap exceeds `Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP)` (currently `GAP_THRESHOLD` = 300s, the largest of the three), and tries `[ruleA1, ruleA2, ruleA3]` on each pair — collecting every non-null result directly into the endpoint-facing link shape (the relation string is looked up via an internal `RELATION_BY_RULE` map). The `/anchor-chain` endpoint now just calls `linkAllAnchors(anchors)` and returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches). A future A4 rule only needs to be added to `ALL_RULES`/`RELATION_BY_RULE` inside `anchorLinker.js` — the endpoint doesn't change.
 
 Each link shape:
 ```js
 { from, to, rule, relation, confidence, evidence }
 // from/to: gameTime in seconds
-// relation: 'death_triggered_collapse' (A1) | 'death_delayed_spike' (A2)
+// relation: 'death_triggered_collapse' (A1) | 'death_delayed_spike' (A2) | 'death_chain' (A3)
 // confidence: 'strong' | 'medium' | 'weak'
 // evidence: rule-specific — see the `evidence` fields tables above
 ```
@@ -1046,9 +1087,18 @@ const RELATION_META = {
     toBadge:   (l) => `← 源于 mm:ss 的死亡`,
     cardTitle: (l) => `mm:ss 阵亡 → mm:ss <装备名> 落后`,  // item name via itemDisplayName(l.evidence.my_item)
   },
-  // Add A3… here; all frontends pick them up automatically
+  death_chain: {
+    fromKind:  'death',   // both ends are kind='death' — see disambiguation note below
+    toKind:    'death',
+    fromBadge: '⚡ 引发连续送死',
+    toBadge:   (l) => `← 复活后又死（间隔 Ns）`,
+    cardTitle: (l) => `mm:ss 阵亡 → mm:ss 再次阵亡（间隔 Ns）`,
+  },
+  // Add A4… here; all frontends pick them up automatically
 };
 ```
+
+**Same-`kind` badge disambiguation (A3):** `death_chain` is the first rule where `fromKind === toKind` (both `'death'`). This is safe with the existing `fromLinks`/`toLinks` filtering because those lookups key on **gameTime** (`linksByFrom[link.from]` / `linksByTo[link.to]`), not anchor identity — and A3's gate 3 (`gap > 0`) guarantees the two death anchors always have distinct gameTimes. So the earlier death anchor only ever falls into `linksByFrom` (gets `fromBadge`) and the later one only into `linksByTo` (gets `toBadge`) for that link; no code changes were needed to the disambiguation logic itself.
 
 **`CONFIDENCE_STYLE`** maps `'strong' | 'medium' | 'weak'` → `{ color, bg, border, label }`. Strong uses red, medium amber, weak muted grey.
 
@@ -1068,7 +1118,7 @@ const RELATION_META = {
 - `CausalBadge` inserted between summary text and expand arrow
   - `fromLinks` → `fromBadge` text; `toLinks` → `toBadge(link)` text
   - Kind-filtered disambiguation: same-gameTime anchors of different kinds don't steal each other's badges
-- **Inline evidence panel** appears below the row (regardless of expand state) when `activeLink` targets this anchor. Rendered by the shared `renderLinkEvidence(evidence)` helper, which displays each field **by presence, not by rule** — new rules with new evidence shapes render automatically without touching this function. Currently recognized fields: `gap_seconds`, `chain_deaths` (if >0), `economy_significant` (if true), `economy_delta` (if non-null), `magnitude` (if non-null), `had_buyback` (if true), `my_item`/`my_item_time`, `enemy_item`/`enemy_item_time` (item names resolved via `itemDisplayName`).
+- **Inline evidence panel** appears below the row (regardless of expand state) when `activeLink` targets this anchor. Rendered by the shared `renderLinkEvidence(evidence)` helper, which displays each field **by presence, not by rule** — new rules with new evidence shapes render automatically without touching this function. Currently recognized fields: `gap_seconds`, `chain_deaths` (if >0), `economy_significant` (if true), `economy_delta` (if non-null), `magnitude` (if non-null), `had_buyback` (if true), `my_item`/`my_item_time`, `enemy_item`/`enemy_item_time` (item names resolved via `itemDisplayName`), `first_death_lethal` (if true), `first_death_number`/`second_death_number` (if either is non-null).
 
 **`逻辑链` cards section** (rendered after the anchor chain block):
 - Hidden when `anchorLinks` is empty — no error, no empty state UI
@@ -1124,7 +1174,7 @@ dota-ai-coach/
 │   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
 │   ├── openDotaMomentumScanner.js     ← Pure: scanMomentumShifts(timeseries) — decoupled anchor scanner
 │   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor + buildAnchorChain()
-│   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 + GAP_THRESHOLD / A2_MAX_GAP
+│   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 / scoreA3 / ruleA3 / linkAllAnchors + GAP_THRESHOLD / A2_MAX_GAP / A3_MAX_GAP / A3_QUICK_GAP
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -1152,7 +1202,7 @@ dota-ai-coach/
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
 │       ├── openDotaSpikeWindowScanner.test.js   ← 89 assertions (decoupling, spike_lead/deficit, multi-item per-item, null-delta unique, fastest enemy, sort, significant)
 │       ├── anchorChain.test.js                  ← 93 assertions (decoupling, all mappers, merge sort, tie-break, shape)
-│       ├── anchorLinker.test.js                 ← 110 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2 gates + evidence)
+│       ├── anchorLinker.test.js                 ← 175 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2, scoreA3/ruleA3 gates + evidence, linkAllAnchors dispatcher)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

@@ -12,9 +12,30 @@
 // Rule A2: death anchor followed by spike_deficit within A2_MAX_GAP seconds.
 //   Hypothesis: the death was costly enough to delay a key item, causing the
 //   player to fall behind the matching enemy's power spike.
+//
+// Rule A3: death anchor followed by another death within A3_MAX_GAP seconds.
+//   Hypothesis: the player died again shortly after respawning — a chain death
+//   / over-eager re-engagement. See A3_MAX_GAP comment for the data limitation
+//   this approximates around (no true respawn time available for OD imports).
 
 const GAP_THRESHOLD = 300; // seconds — momentum loss must follow death within 5 minutes
 const A2_MAX_GAP    = 240; // seconds — spike_deficit must follow death within 4 minutes
+
+// A3: max gap (seconds) between two deaths to call it a "chain death."
+// The literal definition — "died again within 90s of respawning" — needs the
+// respawn timestamp. hero_respawn is GSI-only (never reconstructed for OpenDota
+// imports, and there's no respawn anchor in the chain at all), and imported
+// hero_death snapshots are minimal ({killer, killerDisplayName, deathNumber,
+// source}) — no level field, so respawn wait time can't be looked up either.
+// So A3 approximates "died again shortly after respawning" using the raw gap
+// between the two deaths instead of a computed respawn time. No estimation of
+// respawn time is performed (no-guessing principle).
+// A3_MAX_GAP ≈ average respawn wait (~60s) + the 90s quick-death window.
+// Precision limit: late-game respawn waits can reach ~100s, so a death that is
+// genuinely "within 90s of respawn" late-game can produce a raw gap exceeding
+// this constant and be missed. Tune here if that proves too tight in practice.
+const A3_MAX_GAP   = 150;
+const A3_QUICK_GAP = 90; // gap this short or shorter reads as "died almost immediately after respawn"
 
 // ── Lethality helper ───────────────────────────────────────────────────────
 
@@ -204,9 +225,139 @@ function ruleA2(anchorA, anchorB) {
   };
 }
 
+// ── Rule A3 ────────────────────────────────────────────────────────────────
+
+/**
+ * Score a death-→-death (chain death) link.
+ *
+ * Three-tier:  strong | medium | weak
+ *   strong — the second death came quickly (≤ A3_QUICK_GAP) AND the first
+ *            death was itself lethal (measurable downstream consequence)
+ *   medium — either signal alone
+ *   weak   — neither
+ *
+ * Reuses isLethalDeath (the same lethality signal as A1), so OD-import deaths
+ * can reach 'strong'/'medium' via chainDeaths/economy signals, not just GSI's
+ * critical severity.
+ *
+ * @param {object} firstDeath  Unified Anchor of kind 'death' (the earlier one)
+ * @param {number} gap         Seconds between the two deaths
+ * @returns {'strong'|'medium'|'weak'}
+ */
+function scoreA3(firstDeath, gap) {
+  const quick  = gap <= A3_QUICK_GAP;
+  const lethal = isLethalDeath(firstDeath);
+  if (quick && lethal) return 'strong';
+  if (quick || lethal) return 'medium';
+  return 'weak';
+}
+
+/**
+ * Rule A3: a hero_death anchor followed by another hero_death anchor within
+ * A3_MAX_GAP seconds — approximates "died again shortly after respawning."
+ *
+ * Two gates (no third domain check — the gap itself is the evidence; there's
+ * no further fact to verify beyond "did another death happen soon after"):
+ *   1. anchorA.kind === 'death'
+ *   2. anchorB.kind === 'death'
+ *   3. gap = anchorB.gameTime − anchorA.gameTime is in (0, A3_MAX_GAP]
+ *
+ * Multi-death chains: when the dispatcher (linkAllAnchors) applies this rule
+ * to every ordered anchor pair, three deaths d1,d2,d3 each ≤A3_MAX_GAP apart
+ * can produce d1→d2, d2→d3, and (if d3−d1 ≤ A3_MAX_GAP) d1→d3 as three
+ * separate links. This is intentional — it represents "repeated dying during
+ * this stretch," not a single discrete event. A future "adjacent deaths only"
+ * constraint could suppress the d1→d3 link, but is not implemented here.
+ *
+ * @param {object} anchorA  Unified Anchor (death, earlier)
+ * @param {object} anchorB  Unified Anchor (death, later)
+ * @returns {object|null}   Link object, or null if any gate fails
+ */
+function ruleA3(anchorA, anchorB) {
+  // Gate 1
+  if (anchorA.kind !== 'death') return null;
+  // Gate 2
+  if (anchorB.kind !== 'death') return null;
+  // Gate 3
+  const gap = anchorB.gameTime - anchorA.gameTime;
+  if (gap <= 0 || gap > A3_MAX_GAP) return null;
+
+  const score = scoreA3(anchorA, gap);
+
+  return {
+    rule:    'A3',
+    anchors: [anchorA, anchorB],
+    score,
+    evidence: {
+      gap_seconds:         gap,
+      first_death_lethal:  isLethalDeath(anchorA),
+      // deathNumber path differs by source: OD imports carry snapshot.deathNumber;
+      // GSI deaths carry snapshot.deathsAtDeath (see deathToAnchor in anchorChain.js).
+      first_death_number:  anchorA.detail?.snapshot?.deathNumber ?? anchorA.detail?.snapshot?.deathsAtDeath ?? null,
+      second_death_number: anchorB.detail?.snapshot?.deathNumber ?? anchorB.detail?.snapshot?.deathsAtDeath ?? null,
+    },
+  };
+}
+
+// ── Dispatcher ─────────────────────────────────────────────────────────────
+
+// relation string per rule — used to build the endpoint-facing link shape.
+const RELATION_BY_RULE = {
+  A1: 'death_triggered_collapse',
+  A2: 'death_delayed_spike',
+  A3: 'death_chain',
+};
+
+const ALL_RULES = [ruleA1, ruleA2, ruleA3];
+
+/**
+ * Run every anchor-link rule over every ordered pair of anchors (a before b),
+ * collecting all non-null results into the endpoint-facing link shape.
+ *
+ * All current rules require anchorA.kind === 'death', so the outer loop skips
+ * non-death anchors. The inner loop breaks once the gap exceeds the largest
+ * rule window (GAP_THRESHOLD, A1's), since anchors are gameTime-sorted —
+ * individual rules apply their own tighter windows internally.
+ *
+ * @param {object[]} anchors  Unified Anchor array, sorted by gameTime ASC
+ *                            (as produced by buildAnchorChain).
+ * @returns {object[]}  { from, to, rule, relation, confidence, evidence }[]
+ */
+function linkAllAnchors(anchors) {
+  const maxGap = Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP);
+  const links = [];
+
+  for (let i = 0; i < anchors.length; i++) {
+    const a = anchors[i];
+    if (a.kind !== 'death') continue;
+    for (let j = i + 1; j < anchors.length; j++) {
+      const b = anchors[j];
+      if (b.gameTime - a.gameTime > maxGap) break;
+
+      for (const rule of ALL_RULES) {
+        const result = rule(a, b);
+        if (result) {
+          links.push({
+            from:       a.gameTime,
+            to:         b.gameTime,
+            rule:       result.rule,
+            relation:   RELATION_BY_RULE[result.rule],
+            confidence: result.score,
+            evidence:   result.evidence,
+          });
+        }
+      }
+    }
+  }
+
+  return links;
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 module.exports = {
   isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD,
   scoreA2, ruleA2, A2_MAX_GAP,
+  scoreA3, ruleA3, A3_MAX_GAP, A3_QUICK_GAP,
+  linkAllAnchors,
 };

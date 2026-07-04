@@ -42,7 +42,7 @@ function formatDate(unixSeconds) {
 
 // ── Causal link metadata ───────────────────────────────────────────────────
 
-// Extend here when new rules (A2, A3…) are added.
+// Extend here when new rules (A4…) are added.
 // fromBadge/toBadge/cardTitle use formatTime which is defined above this constant.
 const RELATION_META = {
   death_triggered_collapse: {
@@ -58,6 +58,17 @@ const RELATION_META = {
     fromBadge: '⚡ 耽误关键装',
     toBadge:   (l) => `← 源于 ${formatTime(l.from)} 的死亡`,
     cardTitle: (l) => `${formatTime(l.from)} 阵亡 → ${formatTime(l.to)} ${itemDisplayName('item_' + l.evidence.my_item)} 落后`,
+  },
+  // Both ends are kind='death'. This is safe with the existing kind-filtered
+  // badge logic below because fromLinks/toLinks are keyed by gameTime (link.from
+  // vs link.to), not by anchor identity — and gate 3 in ruleA3 guarantees
+  // gap > 0, so the two death anchors always have distinct gameTimes.
+  death_chain: {
+    fromKind:  'death',
+    toKind:    'death',
+    fromBadge: '⚡ 引发连续送死',
+    toBadge:   (l) => `← 复活后又死（间隔 ${l.evidence.gap_seconds}s）`,
+    cardTitle: (l) => `${formatTime(l.from)} 阵亡 → ${formatTime(l.to)} 再次阵亡（间隔 ${l.evidence.gap_seconds}s）`,
   },
 };
 
@@ -278,7 +289,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
   const missingDeaths = isImport ? Math.max(0, (m.deaths || 0) - reconstructedDeaths) : 0;
 
   // Shared renderer for a causal link's evidence fields — driven by field
-  // presence, not by which rule produced the link, so new rules (A2, A3…)
+  // presence, not by which rule produced the link, so new rules (A4…)
   // render automatically without touching this function.
   // Called from the anchor-row inline panel and the 逻辑链 card expansion.
   function renderLinkEvidence(evidence) {
@@ -314,6 +325,18 @@ function MatchDetail({ matchId, onBack, onDelete }) {
         <div key="enemyitem">
           敌方对应装备 <span style={{ color: '#f0883e' }}>{itemDisplayName(`item_${evidence.enemy_item}`)}</span>
           {evidence.enemy_item_time != null && <> @ <span style={{ color: '#e6edf3' }}>{formatTime(evidence.enemy_item_time)}</span></>}
+        </div>
+      );
+    }
+    if (evidence.first_death_lethal) {
+      rows.push(<div key="firstlethal" style={{ color: '#e3b341' }}>第一次死亡已造成明显损失</div>);
+    }
+    if (evidence.first_death_number != null || evidence.second_death_number != null) {
+      rows.push(
+        <div key="deathnumbers">
+          第 <span style={{ color: '#f85149' }}>{evidence.first_death_number ?? '?'}</span> 次
+          {' → 第 '}
+          <span style={{ color: '#f85149' }}>{evidence.second_death_number ?? '?'}</span> 次死亡
         </div>
       );
     }

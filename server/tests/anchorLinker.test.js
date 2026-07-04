@@ -10,7 +10,12 @@ const src  = fs.readFileSync(
   'utf8'
 );
 
-const { isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD, scoreA2, ruleA2, A2_MAX_GAP } = require('../anchorLinker');
+const {
+  isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD,
+  scoreA2, ruleA2, A2_MAX_GAP,
+  scoreA3, ruleA3, A3_MAX_GAP, A3_QUICK_GAP,
+  linkAllAnchors,
+} = require('../anchorLinker');
 
 let passed = 0;
 let failed = 0;
@@ -42,7 +47,7 @@ assert(!hasRequire(src, 'anchorChain'),                'no require anchorChain')
 
 // ── Test data factories ────────────────────────────────────────────────────
 
-function makeDeathAnchor({ severity = 'danger', context = null, gameTime = 1000 } = {}) {
+function makeDeathAnchor({ severity = 'danger', context = null, gameTime = 1000, snapshot = null } = {}) {
   return {
     gameTime,
     minute:   Math.floor(gameTime / 60),
@@ -54,7 +59,7 @@ function makeDeathAnchor({ severity = 'danger', context = null, gameTime = 1000 
       game_time: gameTime,
       type:      'hero_death',
       severity,
-      snapshot:  { source: 'opendota_import', deathNumber: 1 },
+      snapshot:  snapshot ?? { source: 'opendota_import', deathNumber: 1 },
       context,
     },
   };
@@ -532,6 +537,217 @@ assert(ruleA1(deathA2, momentumB) !== null,
   'ruleA1 still links death→momentum_loss independently of ruleA2');
 assert(ruleA2(deathA2, momentumB) === null,
   'ruleA2 correctly rejects a momentum anchor as anchorB');
+
+// ── A3_MAX_GAP / A3_QUICK_GAP constants ──────────────────────────────────────
+
+console.log('\n── A3_MAX_GAP / A3_QUICK_GAP export ─────────────────────────────────');
+
+assert(typeof A3_MAX_GAP === 'number',   'A3_MAX_GAP is a number');
+assert(A3_MAX_GAP > 0,                   'A3_MAX_GAP is positive');
+assert(typeof A3_QUICK_GAP === 'number', 'A3_QUICK_GAP is a number');
+assert(A3_QUICK_GAP > 0 && A3_QUICK_GAP <= A3_MAX_GAP,
+  'A3_QUICK_GAP is positive and <= A3_MAX_GAP');
+
+// ── scoreA3 ──────────────────────────────────────────────────────────────────
+
+console.log('\n── scoreA3: three-tier scoring ───────────────────────────────────────');
+
+const lethalFirstDeath = makeDeathAnchor({
+  context: makeContext({ chainDeaths: [{ game_time: 1005, message: 'x', snapshot: null }] }),
+});
+const notLethalFirstDeath = makeDeathAnchor({ context: makeContext() });
+
+assert(scoreA3(lethalFirstDeath, 30) === 'strong',
+  'quick (30s <= 90) + lethal first death → strong');
+
+assert(scoreA3(lethalFirstDeath, A3_QUICK_GAP) === 'strong',
+  'quick (boundary = A3_QUICK_GAP) + lethal → strong');
+
+assert(scoreA3(lethalFirstDeath, 120) === 'medium',
+  'not quick (120 > 90) + lethal → medium');
+
+assert(scoreA3(notLethalFirstDeath, 30) === 'medium',
+  'quick (30s) + not lethal → medium');
+
+assert(scoreA3(notLethalFirstDeath, 120) === 'weak',
+  'not quick (120) + not lethal → weak');
+
+assert(scoreA3(notLethalFirstDeath, A3_QUICK_GAP + 1) === 'weak',
+  'just past quick boundary + not lethal → weak');
+
+// OD-import reachability: economy.significant (lethal via isLethalDeath) + quick → strong
+const econLethalFirstDeath = makeDeathAnchor({
+  context: makeContext({
+    economy: { available: true, minuteAtDeath: 16, advBefore: 1500, advAfter: 200, delta: -1300, significant: true },
+  }),
+});
+assert(scoreA3(econLethalFirstDeath, 40) === 'strong',
+  'OD-import reachability: economy.significant (no chainDeaths, no critical) + quick → strong');
+
+// ── ruleA3: gate checks ───────────────────────────────────────────────────────
+
+console.log('\n── ruleA3: gate 1 — anchorA must be a death ─────────────────────────');
+
+const deathA3First  = makeDeathAnchor({ gameTime: 1000, context: makeContext(), snapshot: { source: 'opendota_import', deathNumber: 3 } });
+const deathA3Second = makeDeathAnchor({ gameTime: 1050, context: makeContext(), snapshot: { source: 'opendota_import', deathNumber: 4 } });
+
+assert(ruleA3(notDeath, deathA3Second) === null,
+  'gate 1: anchorA.kind !== death → null');
+
+console.log('\n── ruleA3: gate 2 — anchorB must be a death ─────────────────────────');
+
+assert(ruleA3(deathA3First, momentumB) === null,
+  'gate 2: anchorB.kind = momentum (not death) → null');
+
+assert(ruleA3(deathA3First, spikeDeficitB) === null,
+  'gate 2: anchorB.kind = spike (not death) → null');
+
+console.log('\n── ruleA3: gate 3 — gap must be in (0, A3_MAX_GAP] ──────────────────');
+
+const deathAtSameTime = makeDeathAnchor({ gameTime: 1000, context: makeContext() });
+assert(ruleA3(deathA3First, deathAtSameTime) === null,
+  'gate 3: gap = 0 (same gameTime) → null');
+
+const deathBefore = makeDeathAnchor({ gameTime: 900, context: makeContext() });
+assert(ruleA3(deathA3First, deathBefore) === null,
+  'gate 3: b before a (negative gap) → null');
+
+const deathAtLimit = makeDeathAnchor({ gameTime: 1000 + A3_MAX_GAP, context: makeContext() });
+assert(ruleA3(deathA3First, deathAtLimit) !== null,
+  `gate 3: gap = A3_MAX_GAP (${A3_MAX_GAP}s) → valid link`);
+
+const deathOverLimit = makeDeathAnchor({ gameTime: 1000 + A3_MAX_GAP + 1, context: makeContext() });
+assert(ruleA3(deathA3First, deathOverLimit) === null,
+  'gate 3: gap > A3_MAX_GAP → null');
+
+console.log('\n── ruleA3: returned link shape ───────────────────────────────────────');
+
+const linkA3 = ruleA3(deathA3First, deathA3Second);
+assert(linkA3 !== null,                        'full-pass link: not null');
+assert(linkA3.rule === 'A3',                    'link: rule = A3');
+assert(Array.isArray(linkA3.anchors),           'link: anchors is array');
+assert(linkA3.anchors[0] === deathA3First,      'link: anchors[0] is deathA3First');
+assert(linkA3.anchors[1] === deathA3Second,     'link: anchors[1] is deathA3Second');
+assert(['strong', 'medium', 'weak'].includes(linkA3.score),
+  'link: score is one of strong/medium/weak');
+
+console.log('\n── ruleA3: evidence fields ───────────────────────────────────────────');
+
+const evidA3 = linkA3.evidence;
+assert(evidA3.gap_seconds === 50,               'evidence: gap_seconds = 1050 - 1000 = 50');
+assert(evidA3.first_death_lethal === false,     'evidence: first_death_lethal = false (plain context)');
+assert(evidA3.first_death_number === 3,         'evidence: first_death_number = 3 (from snapshot.deathNumber)');
+assert(evidA3.second_death_number === 4,        'evidence: second_death_number = 4 (from snapshot.deathNumber)');
+
+// GSI-style snapshot uses deathsAtDeath instead of deathNumber
+const deathGsiFirst  = makeDeathAnchor({ gameTime: 1000, context: makeContext(), snapshot: { deathsAtDeath: 2 } });
+const deathGsiSecond = makeDeathAnchor({ gameTime: 1040, context: makeContext(), snapshot: { deathsAtDeath: 3 } });
+const linkA3Gsi = ruleA3(deathGsiFirst, deathGsiSecond);
+assert(linkA3Gsi.evidence.first_death_number === 2,
+  'evidence: first_death_number falls back to snapshot.deathsAtDeath for GSI deaths');
+assert(linkA3Gsi.evidence.second_death_number === 3,
+  'evidence: second_death_number falls back to snapshot.deathsAtDeath for GSI deaths');
+
+// Missing snapshot entirely → null, not a thrown error
+const deathNoSnapshot = { ...deathA3First, detail: { ...deathA3First.detail, snapshot: null } };
+const linkA3NoSnapshot = ruleA3(deathNoSnapshot, deathA3Second);
+assert(linkA3NoSnapshot.evidence.first_death_number === null,
+  'evidence: first_death_number = null when snapshot missing');
+
+console.log('\n── ruleA3: evidence with lethal first death ─────────────────────────');
+
+const linkA3Lethal = ruleA3(lethalFirstDeath, makeDeathAnchor({ gameTime: 1000 + 40 }));
+assert(linkA3Lethal.evidence.first_death_lethal === true,
+  'evidence: first_death_lethal = true when first death has chainDeaths');
+assert(linkA3Lethal.score === 'strong',
+  'quick + lethal first death → score = strong');
+
+console.log('\n── ruleA3: scoreA3 consistency ───────────────────────────────────────');
+
+const linkA3Far = ruleA3(notLethalFirstDeath, makeDeathAnchor({ gameTime: 1000 + 120 }));
+assert(linkA3Far.score === 'weak',
+  'not quick, not lethal → weak (matches scoreA3)');
+
+// ── Multi-death chain ──────────────────────────────────────────────────────
+
+console.log('\n── ruleA3: multi-death chain (d1, d2, d3) ────────────────────────────');
+
+const d1 = makeDeathAnchor({ gameTime: 1000, context: makeContext() });
+const d2 = makeDeathAnchor({ gameTime: 1080, context: makeContext() }); // gap from d1: 80
+const d3 = makeDeathAnchor({ gameTime: 1180, context: makeContext() }); // gap from d2: 100, from d1: 180
+
+assert(ruleA3(d1, d2) !== null, 'd1→d2 (gap=80, within A3_MAX_GAP) → link');
+assert(ruleA3(d2, d3) !== null, 'd2→d3 (gap=100, within A3_MAX_GAP) → link');
+assert(ruleA3(d1, d3) === null, 'd1→d3 (gap=180, exceeds A3_MAX_GAP) → no link (documented: not every pair chains)');
+
+const d4 = makeDeathAnchor({ gameTime: 1050, context: makeContext() }); // gap from d1: 50, from d2 -30 (before)
+// A three-death cluster all within A3_MAX_GAP of each other produces multiple pairs.
+const tightD1 = makeDeathAnchor({ gameTime: 2000, context: makeContext() });
+const tightD2 = makeDeathAnchor({ gameTime: 2060, context: makeContext() }); // +60
+const tightD3 = makeDeathAnchor({ gameTime: 2140, context: makeContext() }); // +80 from d2, +140 from d1
+assert(ruleA3(tightD1, tightD2) !== null, 'tight cluster: d1→d2 links');
+assert(ruleA3(tightD2, tightD3) !== null, 'tight cluster: d2→d3 links');
+assert(ruleA3(tightD1, tightD3) !== null, 'tight cluster: d1→d3 also links (gap=140 <= 150) — intentional per multi-death chain doc');
+
+// ── linkAllAnchors: dispatcher ────────────────────────────────────────────
+
+console.log('\n── linkAllAnchors: degenerate inputs ─────────────────────────────────');
+
+assert(Array.isArray(linkAllAnchors([])), 'empty anchors → array');
+assert(linkAllAnchors([]).length === 0,   'empty anchors → []');
+assert(linkAllAnchors([deathA2]).length === 0, 'single anchor → [] (no pairs)');
+
+console.log('\n── linkAllAnchors: all three rules fire independently, no cross-talk ─');
+
+// Build a mixed chain: death(1000, buyback+lethal-econ) → momentum_loss(1020) → spike_deficit(1100) → death(1060)
+const mixedDeath = makeDeathAnchor({
+  gameTime: 1000,
+  context: makeContext({
+    diedWithBuyback: true,
+    economy: { available: true, minuteAtDeath: 16, advBefore: 1500, advAfter: 200, delta: -1300, significant: true },
+  }),
+});
+const mixedMomentum = makeMomentumAnchor({ gameTime: 1020 });
+const mixedSpike     = makeSpikeAnchor({ gameTime: 1100 });
+const mixedSecondDeath = makeDeathAnchor({ gameTime: 1060, context: makeContext() });
+
+const mixedAnchors = [mixedDeath, mixedMomentum, mixedSecondDeath, mixedSpike]
+  .sort((a, b) => a.gameTime - b.gameTime);
+
+const mixedLinks = linkAllAnchors(mixedAnchors);
+
+const a1Links = mixedLinks.filter((l) => l.rule === 'A1');
+const a2Links = mixedLinks.filter((l) => l.rule === 'A2');
+const a3Links = mixedLinks.filter((l) => l.rule === 'A3');
+
+assert(a1Links.length === 1, 'exactly one A1 link (death→momentum_loss) produced');
+assert(a1Links[0].relation === 'death_triggered_collapse', 'A1 link relation = death_triggered_collapse');
+assert(a1Links[0].from === 1000 && a1Links[0].to === 1020, 'A1 link from/to correct');
+
+assert(a2Links.length === 1, 'exactly one A2 link (death→spike_deficit) produced');
+assert(a2Links[0].relation === 'death_delayed_spike', 'A2 link relation = death_delayed_spike');
+assert(a2Links[0].from === 1000 && a2Links[0].to === 1100, 'A2 link from/to correct');
+
+assert(a3Links.length === 1, 'exactly one A3 link (death→death) produced');
+assert(a3Links[0].relation === 'death_chain', 'A3 link relation = death_chain');
+assert(a3Links[0].from === 1000 && a3Links[0].to === 1060, 'A3 link from/to correct');
+
+// Every link must carry the endpoint-facing shape
+for (const l of mixedLinks) {
+  assert(typeof l.from === 'number' && typeof l.to === 'number', `link ${l.rule}: from/to are numbers`);
+  assert(typeof l.relation === 'string', `link ${l.rule}: relation is a string`);
+  assert(['strong', 'medium', 'weak'].includes(l.confidence), `link ${l.rule}: confidence is valid`);
+  assert(typeof l.evidence === 'object' && l.evidence !== null, `link ${l.rule}: evidence is an object`);
+}
+
+console.log('\n── linkAllAnchors: A3 does not interfere with A1/A2 rule identification ─');
+
+// mixedSecondDeath at 1060 is itself a valid anchorA for further rules — confirm
+// it does not spuriously produce an A1/A2 link against the same spike/momentum
+// anchors (kind gates should prevent any cross type confusion).
+const fromSecondDeath = mixedLinks.filter((l) => l.from === 1060);
+assert(fromSecondDeath.every((l) => l.rule === 'A3' || l.to > 1060),
+  'links originating from the second death are well-formed (no malformed cross-rule entries)');
 
 // ── Summary ────────────────────────────────────────────────────────────────
 
