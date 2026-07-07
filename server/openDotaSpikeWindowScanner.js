@@ -203,11 +203,21 @@ function countAtOrBefore(completions, t) {
  *     highest enemy count as of T, emit one pace_recovered anchor and reset
  *     the episode, so a later deficit starts its own escalation from 1.
  *
+ * pace_deficit anchors also carry `recoveredAt`: the gameTime of the
+ * pace_recovered anchor that eventually closes this deficit episode, or
+ * `null` if the player never catches up for the rest of the match. A deficit
+ * is a *state*, not an instant — anchorLinker's A4 rule (pace_deficit →
+ * death) needs to know whether the deficit was still open at the moment of a
+ * later death, not just that it existed at some point earlier in the match.
+ * All deficit anchors escalated within the same episode (i.e. produced
+ * between two recoveries) share the same recoveredAt, since one recovery
+ * closes the whole episode at once.
+ *
  * @param {object[]} players              players[] from OpenDota raw match data
  * @param {number}   selectedPlayerSlot   player_slot of the user's hero (0–4 radiant, 128–132 dire)
  * @returns {Array<{
- *   gameTime, type, myCount, enemyCount, gap, enemyHero, triggerItem, significant
- * }>}  Sorted by gameTime ascending.
+ *   gameTime, type, myCount, enemyCount, gap, enemyHero, triggerItem, significant, recoveredAt?
+ * }>}  Sorted by gameTime ascending. `recoveredAt` is present only on pace_deficit anchors.
  */
 function scanPaceDeficits(players, selectedPlayerSlot) {
   if (!Array.isArray(players) || players.length === 0) return [];
@@ -260,6 +270,10 @@ function scanPaceDeficits(players, selectedPlayerSlot) {
   const anchors = [];
   let maxGap = 0;
   let behind = false;
+  // Indices (into `anchors`) of pace_deficit anchors produced in the current,
+  // still-open episode. All of them get backfilled with the same
+  // recoveredAt once the episode closes (or stay null if it never does).
+  let episodeIndices = [];
 
   for (const ev of timeline) {
     if (ev.kind === 'enemy') {
@@ -275,13 +289,17 @@ function scanPaceDeficits(players, selectedPlayerSlot) {
           enemyHero:   ev.hero,
           triggerItem: ev.item,
           significant: gap >= PACE_SIGNIFICANT_GAP,
+          recoveredAt: null,
         });
+        episodeIndices.push(anchors.length - 1);
         maxGap = gap;
         behind = true;
       }
     } else if (behind) {
       const { max: enemyMax, hero: enemyHero } = enemyMaxAt(ev.time);
       if (ev.count >= enemyMax) {
+        for (const idx of episodeIndices) anchors[idx].recoveredAt = ev.time;
+        episodeIndices = [];
         anchors.push({
           gameTime:    ev.time,
           type:        'pace_recovered',

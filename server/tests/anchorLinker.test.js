@@ -14,6 +14,7 @@ const {
   isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD,
   scoreA2, ruleA2, A2_MAX_GAP,
   scoreA3, ruleA3, A3_MAX_GAP, A3_QUICK_GAP,
+  scoreA4, ruleA4, A4_MAX_GAP, A4_NEAR_GAP,
   linkAllAnchors,
 } = require('../anchorLinker');
 
@@ -65,18 +66,35 @@ function makeDeathAnchor({ severity = 'danger', context = null, gameTime = 1000,
   };
 }
 
-function makeContext({ chainDeaths = [], economy = null, diedWithBuyback = null } = {}) {
+function makeContext({ chainDeaths = [], economy = null, diedWithBuyback = null, killsNearby = [] } = {}) {
   return {
     windowStart:       995,
     windowEnd:         1060,
     chainDeaths,
-    killsNearby:       [],
+    killsNearby,
     objectivesLost:    [],
     objectivesGained:  [],
     diedWithBuyback,
     majorObjectiveLost: false,
     economy: economy !== undefined ? economy : { available: false, minuteAtDeath: null,
       advBefore: null, advAfter: null, delta: null, significant: false },
+  };
+}
+
+function makePaceDeficitAnchor({
+  gameTime = 1000, significant = true, gap = 2, enemyHero = '斧王（Axe）', recoveredAt = null,
+} = {}) {
+  return {
+    gameTime,
+    minute:   Math.floor(gameTime / 60),
+    kind:     'pace',
+    type:     'pace_deficit',
+    severity: significant ? 'warning' : 'info',
+    summary:  'xx:xx 敌方已 N 件关键装，我方 M 件（落后 N）',
+    detail:   {
+      gameTime, type: 'pace_deficit', myCount: 1, enemyCount: 1 + gap, gap,
+      enemyHero, triggerItem: 'blink', significant, recoveredAt,
+    },
   };
 }
 
@@ -707,6 +725,158 @@ assert(ruleA3(tightD1, tightD2) !== null, 'tight cluster: d1→d2 links');
 assert(ruleA3(tightD2, tightD3) !== null, 'tight cluster: d2→d3 links');
 assert(ruleA3(tightD1, tightD3) !== null, 'tight cluster: d1→d3 also links (gap=140 <= 150) — intentional per multi-death chain doc');
 
+// ── A4_MAX_GAP / A4_NEAR_GAP constants ───────────────────────────────────────
+
+console.log('\n── A4_MAX_GAP / A4_NEAR_GAP export ──────────────────────────────────');
+
+assert(typeof A4_MAX_GAP === 'number',  'A4_MAX_GAP is a number');
+assert(A4_MAX_GAP > 0,                  'A4_MAX_GAP is positive');
+assert(typeof A4_NEAR_GAP === 'number', 'A4_NEAR_GAP is a number');
+assert(A4_NEAR_GAP > 0 && A4_NEAR_GAP <= A4_MAX_GAP,
+  'A4_NEAR_GAP is positive and <= A4_MAX_GAP');
+
+// ── scoreA4 ───────────────────────────────────────────────────────────────────
+
+console.log('\n── scoreA4: three-tier scoring ───────────────────────────────────────');
+
+assert(scoreA4({ gap: 60,  deficitGap: 3, noTrade: false }) === 'strong',
+  'near && deep → strong');
+assert(scoreA4({ gap: 60,  deficitGap: 1, noTrade: true })  === 'strong',
+  'near && noTrade → strong');
+assert(scoreA4({ gap: 60,  deficitGap: 1, noTrade: false }) === 'medium',
+  'near only (not deep, no trade happened) → medium');
+assert(scoreA4({ gap: 200, deficitGap: 3, noTrade: false }) === 'medium',
+  'deep only (not near, trade happened) → medium');
+assert(scoreA4({ gap: 200, deficitGap: 1, noTrade: true })  === 'medium',
+  'noTrade only (not near, not deep) → medium');
+assert(scoreA4({ gap: 200, deficitGap: 2, noTrade: false }) === 'weak',
+  'none of the three signals (gap=200>120, deficitGap=2<3, trade happened) → weak');
+
+// ── ruleA4: gate checks ────────────────────────────────────────────────────
+
+console.log('\n── ruleA4: gate 1 — anchorA must be a significant pace_deficit ──────');
+
+const paceDeficitBase = makePaceDeficitAnchor({ gameTime: 1000, significant: true, gap: 2 });
+const deathForA4      = makeDeathAnchor({ gameTime: 1100, context: makeContext() });
+
+assert(ruleA4(notDeath, deathForA4) === null,
+  'gate 1: anchorA.kind = momentum (not pace) → null');
+assert(ruleA4(deathA, deathForA4) === null,
+  'gate 1: anchorA.kind = death (not pace) → null');
+
+const paceRecoveredAnchor = { ...paceDeficitBase, type: 'pace_recovered',
+  detail: { ...paceDeficitBase.detail, type: 'pace_recovered' } };
+assert(ruleA4(paceRecoveredAnchor, deathForA4) === null,
+  'gate 1: anchorA.type = pace_recovered (not pace_deficit) → null');
+
+const paceNotSignificant = makePaceDeficitAnchor({ gameTime: 1000, significant: false, gap: 1 });
+assert(ruleA4(paceNotSignificant, deathForA4) === null,
+  'gate 1: anchorA.detail.significant = false → null (only significant deficits force-link to a death)');
+
+console.log('\n── ruleA4: gate 2 — anchorB must be a death ─────────────────────────');
+
+assert(ruleA4(paceDeficitBase, momentumB) === null,
+  'gate 2: anchorB.kind = momentum (not death) → null');
+assert(ruleA4(paceDeficitBase, spikeDeficitB) === null,
+  'gate 2: anchorB.kind = spike (not death) → null');
+
+console.log('\n── ruleA4: gate 3 — gap must be in (0, A4_MAX_GAP] ──────────────────');
+
+const deathBeforePace = makeDeathAnchor({ gameTime: 900, context: makeContext() }); // before paceDeficitBase at 1000
+assert(ruleA4(paceDeficitBase, deathBeforePace) === null,
+  'gate 3: death before deficit (negative gap) → null');
+
+const deathAtSameTimeA4 = makeDeathAnchor({ gameTime: 1000, context: makeContext() });
+assert(ruleA4(paceDeficitBase, deathAtSameTimeA4) === null,
+  'gate 3: gap = 0 (same gameTime) → null');
+
+const deathAtA4Limit = makeDeathAnchor({ gameTime: 1000 + A4_MAX_GAP, context: makeContext() });
+assert(ruleA4(paceDeficitBase, deathAtA4Limit) !== null,
+  `gate 3: gap = A4_MAX_GAP (${A4_MAX_GAP}s) → valid link`);
+
+const deathOverA4Limit = makeDeathAnchor({ gameTime: 1000 + A4_MAX_GAP + 1, context: makeContext() });
+assert(ruleA4(paceDeficitBase, deathOverA4Limit) === null,
+  'gate 3: gap > A4_MAX_GAP → null');
+
+console.log('\n── ruleA4: domain check ★ — deficit must still be open at death ─────');
+
+// recoveredAt before the death → the deficit was already resolved, no link.
+const paceRecoveredBeforeDeath = makePaceDeficitAnchor({ gameTime: 1000, gap: 2, recoveredAt: 1050 });
+assert(ruleA4(paceRecoveredBeforeDeath, deathForA4) === null,
+  'recoveredAt <= death gameTime → null (deficit already closed, false causality)');
+
+// recoveredAt exactly at the death gameTime → still counts as "already closed."
+const paceRecoveredAtDeath = makePaceDeficitAnchor({ gameTime: 1000, gap: 2, recoveredAt: 1100 });
+assert(ruleA4(paceRecoveredAtDeath, deathForA4) === null,
+  'recoveredAt === death gameTime → null (closed at-or-before death)');
+
+// recoveredAt = null (never recovered for the rest of the match) → link holds.
+assert(ruleA4(paceDeficitBase, deathForA4) !== null,
+  'recoveredAt = null (never recovered) → link holds');
+
+// recoveredAt after the death → deficit was still open at the moment of death → link holds.
+const paceRecoveredAfterDeath = makePaceDeficitAnchor({ gameTime: 1000, gap: 2, recoveredAt: 1500 });
+assert(ruleA4(paceRecoveredAfterDeath, deathForA4) !== null,
+  'recoveredAt > death gameTime → link holds (deficit still open when the player died)');
+
+console.log('\n── ruleA4: returned link shape ───────────────────────────────────────');
+
+const linkA4 = ruleA4(paceDeficitBase, deathForA4);
+assert(linkA4 !== null,                     'full-pass link: not null');
+assert(linkA4.rule === 'A4',                 'link: rule = A4');
+assert(Array.isArray(linkA4.anchors),        'link: anchors is array');
+assert(linkA4.anchors[0] === paceDeficitBase, 'link: anchors[0] is paceDeficitBase');
+assert(linkA4.anchors[1] === deathForA4,      'link: anchors[1] is deathForA4');
+assert(['strong', 'medium', 'weak'].includes(linkA4.score),
+  'link: score is one of strong/medium/weak');
+
+console.log('\n── ruleA4: evidence fields ───────────────────────────────────────────');
+
+const evidA4 = linkA4.evidence;
+assert(evidA4.gap_seconds === 100,              'evidence: gap_seconds = 1100 - 1000 = 100');
+assert(evidA4.deficit_gap === 2,                'evidence: deficit_gap = paceDeficitBase.detail.gap = 2');
+assert(evidA4.enemy_hero === '斧王（Axe）',      'evidence: enemy_hero = paceDeficitBase.detail.enemyHero');
+assert(evidA4.no_trade === true,                'evidence: no_trade = true (deathForA4 context has empty killsNearby)');
+assert(evidA4.recovered_at === null,            'evidence: recovered_at = null (paceDeficitBase never recovered)');
+
+const linkA4Recovered = ruleA4(paceRecoveredAfterDeath, deathForA4);
+assert(linkA4Recovered.evidence.recovered_at === 1500,
+  'evidence: recovered_at = 1500 when the deficit eventually recovers after the death');
+
+console.log('\n── ruleA4: no_trade signal from context.killsNearby ─────────────────');
+
+const deathWithTrade = makeDeathAnchor({ gameTime: 1100, context: makeContext({ killsNearby: [{ game_time: 1102, message: 'x', snapshot: null }] }) });
+const linkA4Trade = ruleA4(paceDeficitBase, deathWithTrade);
+assert(linkA4Trade.evidence.no_trade === false,
+  'evidence: no_trade = false when context.killsNearby is non-empty (a kill was traded)');
+
+console.log('\n── ruleA4: defensive read when context is missing ───────────────────');
+
+const deathNoContext = makeDeathAnchor({ gameTime: 1100, context: null });
+const linkA4NoCtx = ruleA4(paceDeficitBase, deathNoContext);
+assert(linkA4NoCtx !== null,                     'missing context: link still produced (no_trade just defaults false)');
+assert(linkA4NoCtx.evidence.no_trade === false,  'missing context: no_trade = false (defensive read, no crash)');
+
+console.log('\n── ruleA4: multi-death (one deficit, two later deaths) ─────────────');
+
+// Same open deficit episode, two separate deaths both within window and both
+// still-open at their own moment (recoveredAt=null) → two independent A4 links.
+const deathMulti1 = makeDeathAnchor({ gameTime: 1100, context: makeContext() });
+const deathMulti2 = makeDeathAnchor({ gameTime: 1250, context: makeContext() });
+assert(ruleA4(paceDeficitBase, deathMulti1) !== null, 'multi-death: first death links (gap=100)');
+assert(ruleA4(paceDeficitBase, deathMulti2) !== null, 'multi-death: second death also links independently (gap=250)');
+
+console.log('\n── ruleA4: does not interfere with ruleA1/A2/A3 ─────────────────────');
+
+// A pace anchor as anchorA fails A1/A2/A3's gate 1 (all require kind='death').
+assert(ruleA1(paceDeficitBase, momentumB) === null, 'ruleA1 rejects a pace anchorA');
+assert(ruleA2(paceDeficitBase, spikeDeficitB) === null, 'ruleA2 rejects a pace anchorA');
+assert(ruleA3(paceDeficitBase, deathForA4) === null, 'ruleA3 rejects a pace anchorA');
+// A death anchor as anchorA fails A4's gate 1 (requires kind='pace').
+assert(ruleA4(deathA, momentumB) === null, 'ruleA4 rejects a death anchorA');
+// Existing A1 link between a death and momentum is untouched by A4's existence.
+assert(ruleA1(deathA, momentumB) !== null, 'ruleA1 still links death→momentum_loss independently of ruleA4');
+
 // ── linkAllAnchors: dispatcher ────────────────────────────────────────────
 
 console.log('\n── linkAllAnchors: degenerate inputs ─────────────────────────────────');
@@ -766,6 +936,30 @@ console.log('\n── linkAllAnchors: A3 does not interfere with A1/A2 rule iden
 const fromSecondDeath = mixedLinks.filter((l) => l.from === 1060);
 assert(fromSecondDeath.every((l) => l.rule === 'A3' || l.to > 1060),
   'links originating from the second death are well-formed (no malformed cross-rule entries)');
+
+console.log('\n── linkAllAnchors: A4 fires via the shared dispatcher ───────────────');
+
+// A4 is the first rule whose anchorA is not kind='death' — confirm the
+// dispatcher's outer loop (which now admits both 'death' and 'pace' kinds)
+// actually surfaces it end-to-end, not just via the standalone ruleA4() calls above.
+const a4PaceAnchor = makePaceDeficitAnchor({ gameTime: 800, significant: true, gap: 2, recoveredAt: null });
+const a4Death       = makeDeathAnchor({ gameTime: 900, context: makeContext() }); // gap=100
+
+const a4Anchors = [a4PaceAnchor, a4Death].sort((a, b) => a.gameTime - b.gameTime);
+const a4Links = linkAllAnchors(a4Anchors);
+
+assert(a4Links.length === 1, 'linkAllAnchors: exactly one A4 link produced from a pace_deficit + death pair');
+assert(a4Links[0].rule === 'A4', 'linkAllAnchors: rule = A4');
+assert(a4Links[0].relation === 'deficit_forced_death', 'linkAllAnchors: relation = deficit_forced_death');
+assert(a4Links[0].from === 800 && a4Links[0].to === 900, 'linkAllAnchors: from/to correct');
+assert(['strong', 'medium', 'weak'].includes(a4Links[0].confidence), 'linkAllAnchors: confidence valid');
+assert(typeof a4Links[0].evidence === 'object' && a4Links[0].evidence !== null, 'linkAllAnchors: evidence is an object');
+
+// A deficit already recovered before the death → dispatcher must not surface a link.
+const a4RecoveredPace = makePaceDeficitAnchor({ gameTime: 800, significant: true, gap: 2, recoveredAt: 850 });
+const a4AnchorsRecovered = [a4RecoveredPace, a4Death].sort((a, b) => a.gameTime - b.gameTime);
+assert(linkAllAnchors(a4AnchorsRecovered).length === 0,
+  'linkAllAnchors: recovered-before-death deficit produces no A4 link');
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

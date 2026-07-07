@@ -70,6 +70,16 @@ const RELATION_META = {
     toBadge:   (l) => `← 复活后又死（间隔 ${l.evidence.gap_seconds}s）`,
     cardTitle: (l) => `${formatTime(l.from)} 阵亡 → ${formatTime(l.to)} 再次阵亡（间隔 ${l.evidence.gap_seconds}s）`,
   },
+  // fromKind='pace', toKind='death' — the first relation where the "from" end
+  // isn't a death anchor. Safe with the existing kind-filtered fromLinks/toLinks
+  // logic since those filters already key off meta.fromKind/meta.toKind per anchor.
+  deficit_forced_death: {
+    fromKind:  'pace',
+    toKind:    'death',
+    fromBadge: '⚡ 落后期强行接战',
+    toBadge:   (l) => `← 装备落后 ${l.evidence.deficit_gap} 件时阵亡`,
+    cardTitle: (l) => `${formatTime(l.from)} 落后 ${l.evidence.deficit_gap} 件 → ${formatTime(l.to)} 阵亡${l.evidence.no_trade ? '（未换到人头）' : ''}`,
+  },
 };
 
 const CONFIDENCE_STYLE = {
@@ -339,6 +349,15 @@ function MatchDetail({ matchId, onBack, onDelete }) {
           <span style={{ color: '#f85149' }}>{evidence.second_death_number ?? '?'}</span> 次死亡
         </div>
       );
+    }
+    if (evidence.deficit_gap != null) {
+      rows.push(<div key="deficitgap">落后 <span style={{ color: '#f85149' }}>{evidence.deficit_gap}</span> 件关键装</div>);
+    }
+    if (evidence.enemy_hero != null) {
+      rows.push(<div key="enemyhero">敌方 <span style={{ color: '#f0883e' }}>{evidence.enemy_hero}</span></div>);
+    }
+    if (evidence.no_trade) {
+      rows.push(<div key="notrade" style={{ color: '#f85149' }}>未换到人头（纯送）</div>);
     }
     return rows;
   }

@@ -643,6 +643,27 @@ assert(mcRecovered.length === 2, `pace: 2 recovered anchors, one per cycle (got 
 assert(mcDeficits[0].gap === 1 && mcDeficits[1].gap === 1,
   'pace: each new episode restarts gap escalation from 1 (not cumulative)');
 
+console.log('\n── scanPaceDeficits: recoveredAt backfill ────────────────────────────');
+
+// Never recovered (paceEscalation, from the earlier gap-escalation test): all
+// 3 deficit anchors should have recoveredAt = null.
+assert(escResult.every((a) => a.recoveredAt === null),
+  'pace: recoveredAt = null for every deficit anchor when the episode never recovers');
+
+// Recovered after 4 escalations (paceRecoveryPlayers, from the recovery test):
+// all 4 deficit anchors in that single episode share the same recoveredAt,
+// equal to the recovered anchor's gameTime.
+assert(deficits.every((a) => a.recoveredAt === 2600),
+  'pace: all deficit anchors in one episode share the same recoveredAt (the recovery gameTime)');
+assert(recovered[0].gameTime === 2600, 'pace: sanity check — recovered anchor gameTime matches backfilled recoveredAt');
+
+// Two independent cycles (paceMultiCycle, from the repeated cycle test): each
+// deficit's recoveredAt is its OWN episode's recovery time, not the other's.
+assert(mcDeficits[0].recoveredAt === 1200,
+  'pace: cycle 1 deficit recoveredAt = 1200 (its own episode\'s recovery time)');
+assert(mcDeficits[1].recoveredAt === 2200,
+  'pace: cycle 2 deficit recoveredAt = 2200 (its own episode\'s recovery time, independent of cycle 1)');
+
 console.log('\n── scanPaceDeficits: dedup — repeated purchase of same item ─────────');
 
 // Enemy "rebuys" the same item (e.g. sells and rebuilds) — only the first
@@ -675,7 +696,8 @@ assert('gap'         in paceAnchor, 'pace shape: gap present');
 assert('enemyHero'   in paceAnchor, 'pace shape: enemyHero present');
 assert('triggerItem' in paceAnchor, 'pace shape: triggerItem present');
 assert('significant' in paceAnchor, 'pace shape: significant present');
-assert(Object.keys(paceAnchor).length === 8, 'pace shape: exactly 8 fields');
+assert('recoveredAt' in paceAnchor, 'pace shape: recoveredAt present (pace_deficit only)');
+assert(Object.keys(paceAnchor).length === 9, 'pace shape: exactly 9 fields (deficit anchors carry recoveredAt)');
 
 console.log('\n── scanPaceDeficits: sort order (gameTime ascending) ─────────────────');
 

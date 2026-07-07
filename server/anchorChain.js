@@ -158,7 +158,9 @@ function spikeToAnchor(delta) {
  * Map a pace anchor from scanPaceDeficits() to a unified Anchor.
  *
  * @param {object} pace  { gameTime, type, myCount, enemyCount, gap,
- *                          enemyHero, triggerItem, significant }
+ *                          enemyHero, triggerItem, significant, recoveredAt? }
+ *   recoveredAt (pace_deficit only) passes through verbatim in `detail` —
+ *   anchorLinker's A4 rule reads it directly from there.
  */
 function paceToAnchor(pace) {
   let severity;

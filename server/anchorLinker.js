@@ -17,6 +17,15 @@
 //   Hypothesis: the player died again shortly after respawning — a chain death
 //   / over-eager re-engagement. See A3_MAX_GAP comment for the data limitation
 //   this approximates around (no true respawn time available for OD imports).
+//
+// Rule A4: pace_deficit(significant) anchor followed by a death within
+//   A4_MAX_GAP seconds, where the deficit was STILL OPEN at the time of the
+//   death (not already closed by a pace_recovered). Hypothesis: the player
+//   forced a fight while significantly behind on key items and died. Unlike
+//   A1-A3, anchorA here is a 'pace' anchor, not a 'death' anchor — pace_deficit
+//   is a state (it can be closed by a later pace_recovered), not an instant
+//   event, so the rule must check recoveredAt to avoid attributing a death to
+//   a deficit that was already resolved by the time the player died.
 
 const GAP_THRESHOLD = 300; // seconds — momentum loss must follow death within 5 minutes
 const A2_MAX_GAP    = 240; // seconds — spike_deficit must follow death within 4 minutes
@@ -36,6 +45,13 @@ const A2_MAX_GAP    = 240; // seconds — spike_deficit must follow death within
 // this constant and be missed. Tune here if that proves too tight in practice.
 const A3_MAX_GAP   = 150;
 const A3_QUICK_GAP = 90; // gap this short or shorter reads as "died almost immediately after respawn"
+
+// A4: pace_deficit is a persistent state, not an instant, so its window is
+// generous compared to A1/A2/A3 (all of which chain off a death, an instant).
+// Past 5 minutes other factors dominate and attribution gets too speculative
+// — tune here if that proves too tight/loose in practice.
+const A4_MAX_GAP  = 300; // seconds — max gap from deficit escalation to the death
+const A4_NEAR_GAP = 120; // seconds — "the gap just opened up and they died almost immediately"
 
 // ── Lethality helper ───────────────────────────────────────────────────────
 
@@ -299,6 +315,84 @@ function ruleA3(anchorA, anchorB) {
   };
 }
 
+// ── Rule A4 ────────────────────────────────────────────────────────────────
+
+/**
+ * Score a pace_deficit-→-death link.
+ *
+ * Three-tier: strong | medium | weak
+ *   strong — the death came quickly (≤ A4_NEAR_GAP) after the deficit AND
+ *            (the deficit was deep (≥3 items) OR the death traded no kill)
+ *   medium — any one signal alone (near, deep, or no-trade)
+ *   weak   — none of the above
+ *
+ * @param {{gap: number, deficitGap: number, noTrade: boolean}} params
+ * @returns {'strong'|'medium'|'weak'}
+ */
+function scoreA4({ gap, deficitGap, noTrade }) {
+  const near = gap <= A4_NEAR_GAP;
+  const deep = deficitGap >= 3; // 3+ items behind is a crushing economic gap
+  if (near && (deep || noTrade)) return 'strong';
+  if (near || deep || noTrade) return 'medium';
+  return 'weak';
+}
+
+/**
+ * Rule A4: a pace_deficit(significant) anchor followed by a death within
+ * A4_MAX_GAP seconds, where the deficit was STILL OPEN at the time of death.
+ *
+ * Three gates:
+ *   1. anchorA.kind === 'pace' && anchorA.type === 'pace_deficit' &&
+ *      anchorA.detail.significant === true
+ *   2. anchorB.kind === 'death'
+ *   3. gap = anchorB.gameTime − anchorA.gameTime is in (0, A4_MAX_GAP]
+ *
+ * One domain check (the crux of this rule): pace_deficit is a STATE, not an
+ * instant — it can be closed by a later pace_recovered anchor before the
+ * death happens, in which case attributing the death to "being behind" is
+ * false causality (e.g. behind at 16:00, caught up at 19:00, died at 21:00 —
+ * the deficit was long resolved). `recoveredAt` (set by scanPaceDeficits) is
+ * checked against the death's gameTime: if the deficit closed at or before
+ * the death, there's no link.
+ *
+ * @param {object} anchorA  Unified Anchor (kind='pace', type='pace_deficit')
+ * @param {object} anchorB  Unified Anchor (kind='death')
+ * @returns {object|null}   Link object, or null if any gate/check fails
+ */
+function ruleA4(anchorA, anchorB) {
+  // Gate 1
+  if (anchorA.kind !== 'pace' || anchorA.type !== 'pace_deficit') return null;
+  if (anchorA.detail.significant !== true) return null;
+  // Gate 2
+  if (anchorB.kind !== 'death') return null;
+  // Gate 3
+  const gap = anchorB.gameTime - anchorA.gameTime;
+  if (gap <= 0 || gap > A4_MAX_GAP) return null;
+
+  // Domain check — the deficit must still be open at the time of death.
+  const recoveredAt = anchorA.detail.recoveredAt;
+  if (recoveredAt != null && recoveredAt <= anchorB.gameTime) return null;
+
+  // Domain signal: died without trading a kill nearby — a pure loss, not a fight won.
+  const ctx = anchorB.detail && anchorB.detail.context;
+  const noTrade = !!(ctx && Array.isArray(ctx.killsNearby) && ctx.killsNearby.length === 0);
+
+  const score = scoreA4({ gap, deficitGap: anchorA.detail.gap, noTrade });
+
+  return {
+    rule:    'A4',
+    anchors: [anchorA, anchorB],
+    score,
+    evidence: {
+      gap_seconds:  gap,
+      deficit_gap:  anchorA.detail.gap,
+      enemy_hero:   anchorA.detail.enemyHero,
+      no_trade:     noTrade,
+      recovered_at: recoveredAt ?? null,
+    },
+  };
+}
+
 // ── Dispatcher ─────────────────────────────────────────────────────────────
 
 // relation string per rule — used to build the endpoint-facing link shape.
@@ -306,30 +400,35 @@ const RELATION_BY_RULE = {
   A1: 'death_triggered_collapse',
   A2: 'death_delayed_spike',
   A3: 'death_chain',
+  A4: 'deficit_forced_death',
 };
 
-const ALL_RULES = [ruleA1, ruleA2, ruleA3];
+const ALL_RULES = [ruleA1, ruleA2, ruleA3, ruleA4];
 
 /**
  * Run every anchor-link rule over every ordered pair of anchors (a before b),
  * collecting all non-null results into the endpoint-facing link shape.
  *
- * All current rules require anchorA.kind === 'death', so the outer loop skips
- * non-death anchors. The inner loop breaks once the gap exceeds the largest
- * rule window (GAP_THRESHOLD, A1's), since anchors are gameTime-sorted —
- * individual rules apply their own tighter windows internally.
+ * A1-A3 require anchorA.kind === 'death'; A4 requires anchorA.kind === 'pace'
+ * (type 'pace_deficit') — so the outer loop admits both kinds and lets each
+ * rule's own gates reject the pairs it doesn't apply to (e.g. ruleA4 called
+ * with a death anchorA returns null via its gate 1, same as ruleA1 called
+ * with a pace anchorA returns null via its gate 1 — no cross-rule confusion).
+ * The inner loop breaks once the gap exceeds the largest rule window
+ * (currently GAP_THRESHOLD and A4_MAX_GAP tie at 300s), since anchors are
+ * gameTime-sorted — individual rules apply their own tighter windows internally.
  *
  * @param {object[]} anchors  Unified Anchor array, sorted by gameTime ASC
  *                            (as produced by buildAnchorChain).
  * @returns {object[]}  { from, to, rule, relation, confidence, evidence }[]
  */
 function linkAllAnchors(anchors) {
-  const maxGap = Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP);
+  const maxGap = Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP, A4_MAX_GAP);
   const links = [];
 
   for (let i = 0; i < anchors.length; i++) {
     const a = anchors[i];
-    if (a.kind !== 'death') continue;
+    if (a.kind !== 'death' && a.kind !== 'pace') continue;
     for (let j = i + 1; j < anchors.length; j++) {
       const b = anchors[j];
       if (b.gameTime - a.gameTime > maxGap) break;
@@ -359,5 +458,6 @@ module.exports = {
   isLethalDeath, scoreA1, ruleA1, GAP_THRESHOLD,
   scoreA2, ruleA2, A2_MAX_GAP,
   scoreA3, ruleA3, A3_MAX_GAP, A3_QUICK_GAP,
+  scoreA4, ruleA4, A4_MAX_GAP, A4_NEAR_GAP,
   linkAllAnchors,
 };
