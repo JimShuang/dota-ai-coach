@@ -71,8 +71,8 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaEconomyTimeseries.js` | Pure: `buildEconomyTimeseries(raw, playerSlot)` → player-perspective minute-granularity economy/XP timeseries; `economyDeltaAroundDeath(ts, gameTime)` → per-death delta |
 | `server/openDotaMomentumScanner.js` | Pure: `scanMomentumShifts(timeseries)` — independent anchor scanner, no imports from event/death/digest modules |
 | `server/data/genericPowerSpikeItems.js` | 6-bucket universal power-spike item list for enemy comparison (distinct from hero-specific `offlaneHeroProfiles.js` keyItems) |
-| `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas, decoupled from event/death/digest/timeseries/momentum modules |
-| `server/anchorChain.js` | Pure convergence layer: maps the three anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
+| `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas (exact-item-match only), and `scanPaceDeficits(players, selectedPlayerSlot)` — fourth anchor class; aggregate key-item-count deficit/recovery, both decoupled from event/death/digest/timeseries/momentum modules |
+| `server/anchorChain.js` | Pure convergence layer: maps the four anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
 | `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; `scoreA3()`, `ruleA3()` — links death anchors to following death anchors (chain death); `linkAllAnchors()` — dispatcher running all rules over every anchor pair; exports `GAP_THRESHOLD`, `A2_MAX_GAP`, `A3_MAX_GAP`, `A3_QUICK_GAP`. |
 
 ---
@@ -367,14 +367,14 @@ server/tests/
   openDotaDeathDigest.test.js          61 assertions — buildDeathDigest (window boundaries, chainDeaths, killsNearby, objectivesLost/Gained, majorObjectiveLost, diedWithBuyback, slim shape)
   openDotaEconomyTimeseries.test.js    86 assertions — buildEconomyTimeseries (radiant/dire sign flip, null/missing data, xp), economyDeltaAroundDeath (minuteAtDeath, delta, out-of-range, dual-threshold significant), digest integration (context.economy present, degradation)
   openDotaMomentumScanner.test.js      63 assertions — decoupling (no forbidden requires), degenerate inputs, flat plateau, V-shape/inv-V, spike filter, magnitude filter, multiple shifts, anchor fields
-  openDotaSpikeWindowScanner.test.js   89 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit, fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name
-  anchorChain.test.js                 102 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), buildAnchorChain (gameTime ascending, tie-break, partial inputs, shape)
-  anchorLinker.test.js                 175 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1); A3: scoreA3 (three tiers incl. OD-import reachability via isLethalDeath), ruleA3 (two gates, deathNumber/deathsAtDeath fallback, link shape, evidence fields, multi-death chain d1→d2/d2→d3/d1→d3); linkAllAnchors (degenerate inputs, all three rules fire independently with correct relation/from/to, no cross-rule interference)
+  openDotaSpikeWindowScanner.test.js  141 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit (exact-match only, no bucket fallback), fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name; scanPaceDeficits: degenerate inputs, unparsed vs. my-0-items distinction, enemy-0-items, grace window, gap escalation dedup, no-re-emit-below-watermark, recovery + repeated cycles, purchase dedup, anchor shape, sort order, ultimate_scepter/vanguard/hood_of_defiance key corrections
+  anchorChain.test.js                 122 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), paceToAnchor (deficit significant/not-significant severity, recovered, shape), buildAnchorChain (gameTime ascending, tie-break incl. pace, four-array merge, partial inputs, shape)
+  anchorLinker.test.js                176 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1, rejects kind='pace' anchorB); A3: scoreA3 (three tiers incl. OD-import reachability via isLethalDeath), ruleA3 (two gates, deathNumber/deathsAtDeath fallback, link shape, evidence fields, multi-death chain d1→d2/d2→d3/d1→d3); linkAllAnchors (degenerate inputs, all three rules fire independently with correct relation/from/to, no cross-rule interference)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1268 assertions must pass before merging any change.
+All 1341 assertions must pass before merging any change.
 
 ---
 
@@ -795,19 +795,21 @@ Implemented in `server/openDotaSpikeWindowScanner.js`.
 | Bucket | Items |
 |--------|-------|
 | `initiation` | blink, invis_sword, blade_mail |
-| `survivability` | black_king_bar, pipe, eternal_shroud, guardian_greaves, crimson_guard, mekansm, shivas_guard, consecrated_wraps† |
-| `farming` | radiance, manta, bfury, maelstrom, specialists_array† |
-| `damage` | desolator, aghanims_scepter, assault, monkey_king_bar, nullifier |
+| `survivability` | black_king_bar, pipe, eternal_shroud, guardian_greaves, crimson_guard, mekansm, shivas_guard, consecrated_wraps†, vanguard, hood_of_defiance |
+| `farming` | radiance, manta, bfury, maelstrom, specialists_array†, kaya_and_sange‡ |
+| `damage` | desolator, ultimate_scepter, assault, monkey_king_bar, nullifier |
 | `control` | rod_of_atos, sheepstick, orchid, gleipnir, abyssal_blade |
 | `support` | force_staff, glimmer_cape, lotus_orb, solar_crest |
 
 † 7.41 new items — marked `// unverified` in source; no real parsed match in cache confirms key spelling. If wrong, update `genericPowerSpikeItems.js` when a real match is available.
 
+‡ `kaya_and_sange` is grouped under `farming` (spell-damage/status-resistance sustain) rather than `damage` — either bucket is a defensible call; see the comment in `genericPowerSpikeItems.js`.
+
+**Key fix:** Aghanim's Scepter's real OpenDota `purchase_log` key is `ultimate_scepter`, not `aghanims_scepter` — confirmed by the existing `OPENDOTA_KEY_OVERRIDES` map in `matchImporter.js`, which already remapped the real key back to `item_aghanims_scepter` for display. The old `aghanims_scepter` key here never matched real purchase data; enemy Aghanim's timings were silently invisible to this scanner until the fix. `vanguard`, `hood_of_defiance`, and `kaya_and_sange` were added because they also appear in `offlaneHeroProfiles.js` keyItems routes — the pace anchor (below) needs the same item set to apply to both "my" and "generic enemy" completions symmetrically.
+
 ### `scanSpikeWindowDeltas(players, selectedPlayerSlot) → anchors[]`
 
-Produces **one anchor per spike item purchased by the player** (not one per bucket). For each item the player bought that belongs to any bucket, the comparison target is:
-1. **Same-item**: the enemy's earliest purchase of the exact same item (preferred).
-2. **Bucket fallback**: the enemy's earliest item in the same ability bucket (when no enemy bought that exact item).
+Produces **one anchor per spike item purchased by the player** (not one per bucket). **Exact-match only** — the comparison target for each item the player bought is the enemy's earliest purchase of that SAME item. There is no bucket-level fallback: an item in the same ability bucket but with a different key is never substituted, since comparing two different items would produce a misleading timing delta. (An earlier design considered bucket fallback but it was never implemented in code — aggregate "am I behind on item count regardless of which items" comparisons are handled by the separate pace anchor instead; see **Pace Anchors** below.)
 
 Sorted by `|delta|` descending (largest gap first).
 
@@ -817,7 +819,7 @@ Sorted by `|delta|` descending (largest gap first).
   myItem,       // item key purchased by the player (e.g. 'black_king_bar')
   myTime,       // player's purchase_log time in seconds
   enemyHero,    // display name of the matched enemy (profile heroes 中文（English）, others English)
-  enemyItem,    // matched enemy item (same as myItem on exact match; different on bucket fallback)
+  enemyItem,    // matched enemy item — always the same as myItem (exact match only)
   enemyTime,    // matched enemy's purchase_log time in seconds
   delta,        // myTime − enemyTime (positive = deficit, negative = lead)
   type,         // 'spike_deficit' (delta > 0) | 'spike_lead' (delta < 0)
@@ -845,11 +847,61 @@ Spike deltas are mapped to unified Anchors by `spikeToAnchor()` in `anchorChain.
 
 ---
 
+## Pace Anchors
+
+Fourth class of match-analysis anchors, parallel to Death Digest, Momentum Shifts, and Spike Window Deltas. Implemented in `server/openDotaSpikeWindowScanner.js` as `scanPaceDeficits()`, alongside `scanSpikeWindowDeltas()` — same file, same `players[]`/`purchase_log` data source, same decoupling constraints (no imports from event / death / digest / timeseries / momentum modules).
+
+### Motivation: aggregate pace, not per-item timing
+
+`scanSpikeWindowDeltas()` answers "who got *this specific item* first" — but a bucket fallback would have compared two *different* items and produced a misleading delta, which is why it was never implemented (see above). `scanPaceDeficits()` answers the aggregate question instead: **"how many key items (any bucket) has the fastest enemy completed, vs. how many have I completed"** — a total-count comparison that's meaningful even when the player and the leading enemy are building entirely different items. Total item count behind means economy/tempo behind, independent of which specific items either side chose.
+
+### Positional asymmetry (why `PACE_SIGNIFICANT_GAP = 2`, not 1)
+
+The offlane (pos 3) role naturally completes key items later than enemy cores (mid/safelane carry) — a 1-item gap is the normal state of the game, not a coaching signal. Only a gap of **2 or more** items is flagged `significant`. A 1-item deficit is still recorded (so the timeline is complete) but rendered at lower severity (`info`, not `warning`) in the anchor chain.
+
+### `scanPaceDeficits(players, selectedPlayerSlot) → anchors[]`
+
+Algorithm: walk a single merged, time-ordered timeline built from every enemy's key-item completion events (first purchase of each generic-list item, any bucket, per enemy) and the player's own completion events.
+
+- **On an enemy completion** (enemy reaches cumulative count `N` at time `T`): compute the player's count `M` as of `T + PACE_GRACE_SECONDS` (a grace window — completing the item shortly after doesn't count as "being behind"). If the resulting `gap = N − M` is `>= 1` **and** exceeds the largest gap already emitted in the current deficit episode, emit a `pace_deficit` anchor and raise the escalation watermark. This "only emit on a new high" rule avoids one anchor per enemy purchase once the player has fallen behind.
+- **On the player's own completion** (player reaches count `M` at time `T`): if currently inside a deficit episode and `M` now matches or exceeds the highest enemy count as of `T` (no grace on this side), emit one `pace_recovered` anchor and reset the episode — a later deficit restarts its own gap escalation from 1 rather than continuing the old watermark.
+
+```js
+{
+  gameTime,        // trigger time (deficit = enemy's completion time; recovered = my completion time)
+  type,            // 'pace_deficit' | 'pace_recovered'
+  myCount,         // my cumulative completed-item count at that moment (grace-adjusted for deficit)
+  enemyCount,      // the leading enemy's cumulative count
+  gap,             // enemyCount − myCount (recovered: 0 or negative)
+  enemyHero,       // display name of the enemy that set enemyCount (existing dotaHeroNames mapping)
+  triggerItem,     // item key that triggered this anchor (deficit = enemy's item; recovered = my item)
+  significant,     // deficit: gap >= PACE_SIGNIFICANT_GAP; recovered: always false
+}
+```
+
+### Boundary conditions
+
+- `purchase_log` missing (`null`, not an array) for the selected player → `[]` (can't compute the player's own baseline at all — an unparsed-replay signal)
+- Player's `purchase_log` is present but empty (an array with 0 matching completions) → **not** a boundary case; produces normal deficit output starting from gap 1 (this is the everyday "haven't bought a key item yet" state)
+- No enemy ever completes a generic key item → `[]` (no deficit possible, and nothing to recover from)
+- Same enemy repurchasing the same item (restock/rebuy) → counted once, at the earliest purchase time only
+
+### Threshold constants (`openDotaSpikeWindowScanner.js`)
+
+| Constant | Default | Meaning |
+|----------|---------|---------|
+| `PACE_GRACE_SECONDS` | 120 s | Deficit check uses the player's count as of `enemyTime + this`, so a near-simultaneous catch-up isn't flagged |
+| `PACE_SIGNIFICANT_GAP` | 2 items | Gap must be `>=` this to be `significant` — a 1-item gap is the expected offlane/core asymmetry |
+
+Pace anchors are mapped to unified Anchors by `paceToAnchor()` in `anchorChain.js` — see **Anchor Chain** section.
+
+---
+
 ## Anchor Chain
 
-Convergence layer implemented in `server/anchorChain.js`. Receives the outputs of the three scanner functions as parameters and maps them to a uniform `Anchor` shape, then merges them into a single time-ordered array. Does not import any scanner module — fully decoupled.
+Convergence layer implemented in `server/anchorChain.js`. Receives the outputs of the four scanner functions as parameters and maps them to a uniform `Anchor` shape, then merges them into a single time-ordered array. Does not import any scanner module — fully decoupled.
 
-The scanners are invoked by the endpoint in `server/index.js`, which passes their outputs to `buildAnchorChain()`.
+The scanners are invoked by the endpoint in `server/index.js`, which passes their outputs to `buildAnchorChain({ deaths, momentumShifts, spikeDeltas, paceDeficits })`.
 
 ### Unified Anchor shape
 
@@ -857,8 +909,8 @@ The scanners are invoked by the endpoint in `server/index.js`, which passes thei
 {
   gameTime,   // number, seconds — primary sort key
   minute,     // number — Math.floor(gameTime / 60), auxiliary display
-  kind,       // 'death' | 'momentum' | 'spike'
-  type,       // original scanner type value (e.g. 'hero_death', 'momentum_loss', 'spike_deficit')
+  kind,       // 'death' | 'momentum' | 'spike' | 'pace'
+  type,       // original scanner type value (e.g. 'hero_death', 'momentum_loss', 'spike_deficit', 'pace_deficit')
   severity,   // 'critical' | 'danger' | 'warning' | 'info' | 'success'
   summary,    // one-line Chinese human-readable description
   detail,     // original scanner object, kept verbatim for renderer use
@@ -874,6 +926,9 @@ The scanners are invoked by the endpoint in `server/index.js`, which passes thei
 | `momentum` | `momentum_gain` | `success` |
 | `spike` | `spike_deficit` (any) | `warning` — `significant` controls emphasis (bold / 显著 badge) only |
 | `spike` | `spike_lead` | `success` |
+| `pace` | `pace_deficit`, `significant=true` | `warning` |
+| `pace` | `pace_deficit`, `significant=false` | `info` — a 1-item offlane gap is expected, not a warning |
+| `pace` | `pace_recovered` | `success` |
 
 ### Time unit decision
 
@@ -881,7 +936,7 @@ The scanners are invoked by the endpoint in `server/index.js`, which passes thei
 
 ### Tie-break rule (same gameTime)
 
-`death (0) > spike (1) > momentum (2)` — "something happened" events rank before "state-change" events, which rank before "trend analysis" events. Documented in `KIND_PRIORITY` constant in `anchorChain.js`.
+`death (0) > spike (1) > pace (2) > momentum (3)` — "something happened" events rank before "state-change" events (per-item spike, then aggregate pace), which rank before "trend analysis" events. Documented in `KIND_PRIORITY` constant in `anchorChain.js`.
 
 ### Time format (`fmtTime`)
 
@@ -896,6 +951,7 @@ Negative `gameTime` (pre-creep-spawn) renders as `-mm:ss` (not clamped to `00:00
 Death anchors reference Death Digest — see **Death Digest feature** section.
 Momentum anchors reference the scanner — see **Momentum Shift Anchors** section.
 Spike anchors reference the scanner — see **Spike Window Delta Anchors** section.
+Pace anchors reference the scanner — see **Pace Anchors** section.
 
 ### Frontend integration (`MatchHistory.jsx`)
 
@@ -903,12 +959,13 @@ Spike anchors reference the scanner — see **Spike Window Delta Anchors** secti
 
 **"关键时刻" block** renders immediately above the full event timeline in match detail view. Entire block is suppressed when `anchorChain` is empty (common for GSI-only matches that have no OpenDota timeseries). When present, anchors are rendered in `gameTime` ascending order (endpoint already sorts them).
 
-**Per-row layout:** `mm:ss` | kind icon (💀/📈/📉/⏱️) | `summary` text coloured by `severity` (critical/danger → red, warning → orange, info → grey, success → green) | expand arrow `▸`/`▾`.
+**Per-row layout:** `mm:ss` | kind icon (💀/📈/📉/⏱️/⚖️) | `summary` text coloured by `severity` (critical/danger → red, warning → orange, info → grey, success → green) | expand arrow `▸`/`▾`.
 
 **Expand detail by kind:**
 - `death` — calls `renderDeathContext(anchor.detail.context)`, the same function used by the full event timeline's "战场上下文" sub-block. No duplicate implementation.
 - `momentum` — inline panel: slope before/after (gold/min), magnitude, economy gap at shift point.
 - `spike` — inline panel: my item + time vs enemy hero + item + time, lead/deficit formatted as mm:ss with "显著" label when `significant: true`. Item names passed through `itemDisplayName('item_' + rawKey)`.
+- `pace` (⚖️) — inline panel: my count vs. enemy count (with enemy hero name when present), triggering item via `itemDisplayName('item_' + triggerItem)`, "显著" label when `significant: true`. Color comes from the shared `severity`-driven scheme — no separate pace color logic.
 
 **`renderDeathContext(ctx)`** is an extracted inner function inside `MatchDetail`. Both the event timeline and anchor chain call it. The function returns `null` when `ctx` is null or has no interesting fields (empty arrays and `diedWithBuyback == null` and no economy data).
 
@@ -1059,6 +1116,8 @@ Reuses `isLethalDeath` — the same lethality signal as A1 — so OD-import deat
 
 Adding a third rule converged link collection into a dispatcher, **`linkAllAnchors(anchors)`**, exported from `anchorLinker.js`. It replaces the endpoint's former inline double-loop (which handled only A1+A2). It iterates every ordered anchor pair (`a` before `b`, gameTime ascending), skips non-death `a` anchors (all three rules require `anchorA.kind === 'death'`), breaks the inner loop once the gap exceeds `Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP)` (currently `GAP_THRESHOLD` = 300s, the largest of the three), and tries `[ruleA1, ruleA2, ruleA3]` on each pair — collecting every non-null result directly into the endpoint-facing link shape (the relation string is looked up via an internal `RELATION_BY_RULE` map). The `/anchor-chain` endpoint now just calls `linkAllAnchors(anchors)` and returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches). A future A4 rule only needs to be added to `ALL_RULES`/`RELATION_BY_RULE` inside `anchorLinker.js` — the endpoint doesn't change.
 
+**Pace anchors (`kind: 'pace'`) never participate in any existing rule** — all three rules' gate 2 checks an explicit `kind`/`type` combination (`momentum`+`momentum_loss` for A1, `spike`+`spike_deficit` for A2, `death` for A3), so a pace anchor simply fails every gate and is silently skipped by the dispatcher. No changes to `anchorLinker.js` were needed when the fourth anchor class was added — verified by a dedicated test in `anchorLinker.test.js`.
+
 Each link shape:
 ```js
 { from, to, rule, relation, confidence, evidence }
@@ -1173,12 +1232,15 @@ dota-ai-coach/
 │   ├── openDotaDeathDigest.js         ← Pure: buildDeathDigest(events, timeseries?) → hero_death[] with .context windows + economy delta
 │   ├── openDotaEconomyTimeseries.js   ← Pure: buildEconomyTimeseries(raw, slot) + economyDeltaAroundDeath(ts, t)
 │   ├── openDotaMomentumScanner.js     ← Pure: scanMomentumShifts(timeseries) — decoupled anchor scanner
-│   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor + buildAnchorChain()
+│   ├── openDotaSpikeWindowScanner.js  ← Pure: scanSpikeWindowDeltas(players, slot) (per-item) + scanPaceDeficits(players, slot) (aggregate) — two decoupled anchor scanners
+│   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor / paceToAnchor + buildAnchorChain()
 │   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 / scoreA3 / ruleA3 / linkAllAnchors + GAP_THRESHOLD / A2_MAX_GAP / A3_MAX_GAP / A3_QUICK_GAP
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
-│   │   └── itemLocalization.js        ← 90+ item Chinese names, getDisplayName()
+│   │   ├── itemLocalization.js        ← 90+ item Chinese names, getDisplayName()
+│   │   ├── genericPowerSpikeItems.js  ← 6-bucket universal key-item list (POWER_SPIKE_ITEMS, ALL_SPIKE_ITEMS) used by both spike scanners
+│   │   └── dotaHeroNames.js           ← hero_id → display name / internal name maps
 │   ├── rules/
 │   │   ├── commonRules.js             ← 7 universal rules
 │   │   ├── offlaneRules.js            ← offlane-specific rules
@@ -1200,9 +1262,9 @@ dota-ai-coach/
 │       ├── openDotaDeathDigest.test.js          ← 61 assertions (buildDeathDigest, window, chainDeaths, objectives, diedWithBuyback)
 │       ├── openDotaEconomyTimeseries.test.js    ← 86 assertions (buildEconomyTimeseries, economyDeltaAroundDeath, digest integration)
 │       ├── openDotaMomentumScanner.test.js      ← 63 assertions (decoupling, degenerate, V-shape, spike filter, multi-shift)
-│       ├── openDotaSpikeWindowScanner.test.js   ← 89 assertions (decoupling, spike_lead/deficit, multi-item per-item, null-delta unique, fastest enemy, sort, significant)
-│       ├── anchorChain.test.js                  ← 93 assertions (decoupling, all mappers, merge sort, tie-break, shape)
-│       ├── anchorLinker.test.js                 ← 175 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2, scoreA3/ruleA3 gates + evidence, linkAllAnchors dispatcher)
+│       ├── openDotaSpikeWindowScanner.test.js   ← 141 assertions (decoupling, spike_lead/deficit exact-match only, multi-item per-item, null-delta unique, fastest enemy, sort, significant; scanPaceDeficits: escalation dedup, grace window, recovery cycles, dedup, key corrections)
+│       ├── anchorChain.test.js                  ← 122 assertions (decoupling, all mappers incl. paceToAnchor, merge sort, tie-break incl. pace, four-array merge, shape)
+│       ├── anchorLinker.test.js                 ← 176 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2, scoreA3/ruleA3 gates + evidence, linkAllAnchors dispatcher, pace-anchor non-interference)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

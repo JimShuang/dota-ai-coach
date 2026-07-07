@@ -538,6 +538,24 @@ assert(ruleA1(deathA2, momentumB) !== null,
 assert(ruleA2(deathA2, momentumB) === null,
   'ruleA2 correctly rejects a momentum anchor as anchorB');
 
+console.log('\n── ruleA2: pace anchors (kind=pace) are never linked as anchorB ─────');
+
+// pace_deficit anchors have kind='pace', not kind='spike', even though the
+// type string is unrelated to 'spike_deficit' — gate 2 must reject them so a
+// 4th anchor class introduced without touching anchorLinker.js can't be
+// silently misrouted through an existing rule.
+const paceDeficitAnchor = {
+  gameTime: 1100,
+  minute:   Math.floor(1100 / 60),
+  kind:     'pace',
+  type:     'pace_deficit',
+  severity: 'warning',
+  summary:  'xx:xx 敌方已 4 件关键装，我方 2 件（落后 2）',
+  detail:   { gameTime: 1100, type: 'pace_deficit', myCount: 2, enemyCount: 4, gap: 2, enemyHero: 'Axe', triggerItem: 'blink', significant: true },
+};
+assert(ruleA2(deathA2, paceDeficitAnchor) === null,
+  'ruleA2 rejects a pace anchor as anchorB (kind !== spike)');
+
 // ── A3_MAX_GAP / A3_QUICK_GAP constants ──────────────────────────────────────
 
 console.log('\n── A3_MAX_GAP / A3_QUICK_GAP export ─────────────────────────────────');

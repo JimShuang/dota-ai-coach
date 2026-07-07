@@ -13,7 +13,10 @@ const src  = fs.readFileSync(
 
 const {
   scanSpikeWindowDeltas,
+  scanPaceDeficits,
   _SIGNIFICANT_GAP_SECONDS,
+  _PACE_GRACE_SECONDS,
+  _PACE_SIGNIFICANT_GAP,
 } = require('../openDotaSpikeWindowScanner');
 
 let passed = 0;
@@ -446,6 +449,273 @@ const profileInit   = profileResult.find((a) => a.bucket === 'initiation');
 assert(profileInit !== undefined, 'profile hero: initiation anchor present');
 assert(profileInit.enemyHero === '半人马战行者（Centaur Warrunner）',
   'profile hero: enemyHero uses 中文（English）format');
+
+// ── scanPaceDeficits ─────────────────────────────────────────────────────────
+
+console.log('\n── scanPaceDeficits: degenerate inputs → [] ─────────────────────────');
+
+assert(Array.isArray(scanPaceDeficits(null, MY_SLOT)),    'pace: null players → array');
+assert(scanPaceDeficits(null, MY_SLOT).length === 0,      'pace: null players → []');
+assert(scanPaceDeficits(undefined, MY_SLOT).length === 0, 'pace: undefined players → []');
+assert(scanPaceDeficits([], MY_SLOT).length === 0,        'pace: empty players → []');
+assert(scanPaceDeficits(onlyMe, 999).length === 0,        'pace: unknown selected slot → []');
+
+console.log('\n── scanPaceDeficits: unparsed (purchase_log missing) → [] ───────────');
+
+// My player has purchase_log = null (unparsed) — cannot compute anything, even
+// though the enemy has real purchases. Constructed directly (not via
+// makePlayer) since makePlayer's `purchaseLog || []` default would otherwise
+// mask a real null.
+const paceUnparsedMe = [
+  { player_slot: MY_SLOT, hero_id: MY_HERO_ID, purchase_log: null },
+  makePlayer(128, 14, [makePurchase('blink', 1000)]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+assert(scanPaceDeficits(paceUnparsedMe, MY_SLOT).length === 0,
+  'pace: my purchase_log = null (unparsed) → []');
+
+console.log('\n── scanPaceDeficits: enemy never buys a key item → [] ───────────────');
+
+const paceEnemyZero = [
+  makePlayer(MY_SLOT, MY_HERO_ID, [makePurchase('blink', 1000)]),
+  makePlayer(128, 14, []),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+assert(scanPaceDeficits(paceEnemyZero, MY_SLOT).length === 0,
+  'pace: enemy 0 completions throughout → [] (no deficit, no recovered)');
+
+console.log('\n── scanPaceDeficits: my 0 items, enemy has some → normal output ─────');
+
+// My purchase_log is present but empty (array, not null) — a legitimate
+// "haven't bought a key item yet" state, not an unparsed-match state.
+const paceMyZero = [
+  makePlayer(MY_SLOT, MY_HERO_ID, []),
+  makePlayer(128, 14, [makePurchase('blink', 1000)]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const paceMyZeroResult = scanPaceDeficits(paceMyZero, MY_SLOT);
+assert(paceMyZeroResult.length === 1,               'pace: my-0-items → 1 deficit anchor produced');
+assert(paceMyZeroResult[0].type === 'pace_deficit', 'pace: my-0-items anchor type = pace_deficit');
+assert(paceMyZeroResult[0].myCount === 0,           'pace: my-0-items myCount = 0');
+assert(paceMyZeroResult[0].enemyCount === 1,        'pace: my-0-items enemyCount = 1');
+assert(paceMyZeroResult[0].gap === 1,               'pace: my-0-items gap = 1');
+
+console.log('\n── scanPaceDeficits: grace window absorbs a same-window catch-up ────');
+
+// Enemy completes at t=1000. I complete the same count within the grace
+// window (t=1050, well inside 120s) — should NOT count as falling behind.
+const paceGraceAbsorbed = [
+  makePlayer(MY_SLOT, MY_HERO_ID, [makePurchase('force_staff', 1050)]),
+  makePlayer(128, 14, [makePurchase('blink', 1000)]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+assert(scanPaceDeficits(paceGraceAbsorbed, MY_SLOT).length === 0,
+  `pace: catch-up within grace window (${_PACE_GRACE_SECONDS}s) → no deficit anchor`);
+
+console.log('\n── scanPaceDeficits: gap escalation dedup ────────────────────────────');
+
+// Enemy completes 3 items over time; I never buy anything (purchase_log = []).
+// gap escalates 1 → 2 → 3, one anchor per new high, no duplicates.
+const paceEscalation = [
+  makePlayer(MY_SLOT, MY_HERO_ID, []),
+  makePlayer(128, 14, [
+    makePurchase('blink', 1000),          // enemy count 1 → gap 1
+    makePurchase('black_king_bar', 1400), // enemy count 2 → gap 2
+    makePurchase('pipe', 1800),           // enemy count 3 → gap 3
+  ]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const escResult = scanPaceDeficits(paceEscalation, MY_SLOT);
+assert(escResult.length === 3, `pace: 3 escalating deficit anchors (got ${escResult.length})`);
+assert(escResult.every((a) => a.type === 'pace_deficit'), 'pace: all escalation anchors are pace_deficit');
+assert(escResult[0].gap === 1 && escResult[1].gap === 2 && escResult[2].gap === 3,
+  'pace: gaps escalate 1 → 2 → 3 in order');
+assert(escResult[0].gameTime === 1000 && escResult[1].gameTime === 1400 && escResult[2].gameTime === 1800,
+  'pace: escalation anchors fire at each enemy completion time');
+assert(escResult[0].triggerItem === 'blink' && escResult[1].triggerItem === 'black_king_bar' && escResult[2].triggerItem === 'pipe',
+  'pace: triggerItem is the enemy item that caused each escalation');
+
+console.log('\n── scanPaceDeficits: significant flag ────────────────────────────────');
+
+assert(escResult[0].significant === false, `pace: gap=1 < ${_PACE_SIGNIFICANT_GAP} → significant=false`);
+assert(escResult[1].significant === true,  `pace: gap=2 >= ${_PACE_SIGNIFICANT_GAP} → significant=true`);
+assert(escResult[2].significant === true,  'pace: gap=3 → significant=true');
+
+console.log('\n── scanPaceDeficits: no re-emission when gap does not exceed watermark ─');
+
+// After the 3-item escalation above, a 4th enemy completion where I've
+// simultaneously bought one item (gap stays at 3, not a new high) should not
+// produce a 4th anchor.
+const paceNoReEmit = [
+  makePlayer(MY_SLOT, MY_HERO_ID, [makePurchase('force_staff', 2000)]), // my count 1 by t=2000
+  makePlayer(128, 14, [
+    makePurchase('blink', 1000),
+    makePurchase('black_king_bar', 1400),
+    makePurchase('pipe', 1800),
+    makePurchase('desolator', 2200), // enemy count 4; my count (at 2200+120) = 1 → gap 3, not > 3
+  ]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const noReEmitResult = scanPaceDeficits(paceNoReEmit, MY_SLOT);
+assert(noReEmitResult.length === 3,
+  `pace: 4th enemy completion with gap=3 (not a new high) produces no new anchor (got ${noReEmitResult.length})`);
+
+console.log('\n── scanPaceDeficits: recovery after falling behind ──────────────────');
+
+// Enemy completes 4 items (1000, 1200, 1400, 1600, all with grace windows
+// resolved before my first purchase) → escalating deficit to gap=4. I then
+// complete 4 items (2000..2600), the last of which brings my count to match
+// the enemy's max (4) → one pace_recovered anchor.
+const paceRecoveryPlayers = [
+  makePlayer(MY_SLOT, MY_HERO_ID, [
+    makePurchase('force_staff', 2000),
+    makePurchase('glimmer_cape', 2200),
+    makePurchase('rod_of_atos', 2400),
+    makePurchase('sheepstick', 2600),
+  ]),
+  makePlayer(128, 14, [
+    makePurchase('blink', 1000),
+    makePurchase('black_king_bar', 1200),
+    makePurchase('pipe', 1400),
+    makePurchase('desolator', 1600),
+  ]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const recoveryResult = scanPaceDeficits(paceRecoveryPlayers, MY_SLOT);
+const deficits  = recoveryResult.filter((a) => a.type === 'pace_deficit');
+const recovered = recoveryResult.filter((a) => a.type === 'pace_recovered');
+
+assert(deficits.length === 4,   `pace: 4 escalating deficits before recovery (got ${deficits.length})`);
+assert(recovered.length === 1,  `pace: exactly 1 recovered anchor (got ${recovered.length})`);
+assert(recovered[0].gameTime === 2600,     'pace: recovered fires at my 4th completion (t=2600)');
+assert(recovered[0].myCount === 4,         'pace: recovered myCount = 4');
+assert(recovered[0].enemyCount === 4,      'pace: recovered enemyCount = 4 (enemy max at that time)');
+assert(recovered[0].gap === 0,             'pace: recovered gap = enemyCount - myCount = 0');
+assert(recovered[0].significant === false, 'pace: recovered anchors are never significant');
+assert(recovered[0].triggerItem === 'sheepstick', 'pace: recovered triggerItem is my own completed item');
+assert(typeof recovered[0].enemyHero === 'string', 'pace: recovered enemyHero identifies the caught-up enemy');
+
+console.log('\n── scanPaceDeficits: repeated fall-behind / catch-up cycles ─────────');
+
+// Two independent cycles: fall behind, recover, fall behind again, recover again.
+// My purchases land AFTER each enemy purchase's grace window (120s) so the
+// deficit registers, then catch up (raw count, no grace) to trigger recovery.
+const paceMultiCycle = [
+  makePlayer(MY_SLOT, MY_HERO_ID, [
+    makePurchase('force_staff', 1200),  // 200s after enemy's 1st item (outside grace) → recovers cycle 1
+    makePurchase('glimmer_cape', 2200), // 200s after enemy's 2nd item (outside grace) → recovers cycle 2
+  ]),
+  makePlayer(128, 14, [
+    makePurchase('blink', 1000),          // enemy count 1 at t=1000 → deficit #1 (gap=1)
+    makePurchase('black_king_bar', 2000), // enemy count 2 at t=2000 → deficit #2 (gap=1, fresh episode)
+  ]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const multiCycleResult = scanPaceDeficits(paceMultiCycle, MY_SLOT);
+const mcDeficits  = multiCycleResult.filter((a) => a.type === 'pace_deficit');
+const mcRecovered = multiCycleResult.filter((a) => a.type === 'pace_recovered');
+assert(mcDeficits.length === 2,  `pace: 2 separate deficit episodes (got ${mcDeficits.length})`);
+assert(mcRecovered.length === 2, `pace: 2 recovered anchors, one per cycle (got ${mcRecovered.length})`);
+assert(mcDeficits[0].gap === 1 && mcDeficits[1].gap === 1,
+  'pace: each new episode restarts gap escalation from 1 (not cumulative)');
+
+console.log('\n── scanPaceDeficits: dedup — repeated purchase of same item ─────────');
+
+// Enemy "rebuys" the same item (e.g. sells and rebuilds) — only the first
+// purchase counts toward the completion count.
+const paceDedup = [
+  makePlayer(MY_SLOT, MY_HERO_ID, []),
+  makePlayer(128, 14, [
+    makePurchase('blink', 1000),
+    makePurchase('blink', 1500), // restock/rebuy — should not count as a 2nd item
+  ]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const dedupResult = scanPaceDeficits(paceDedup, MY_SLOT);
+assert(dedupResult.length === 1, `pace: repeated purchase of same item → 1 anchor only (got ${dedupResult.length})`);
+assert(dedupResult[0].enemyCount === 1, 'pace: repeated purchase of same item → enemyCount = 1, not 2');
+assert(dedupResult[0].gameTime === 1000, 'pace: repeated purchase — anchor uses the earliest purchase time');
+
+console.log('\n── scanPaceDeficits: anchor shape ────────────────────────────────────');
+
+const shapePaceResult = scanPaceDeficits(paceMyZero, MY_SLOT);
+const paceAnchor = shapePaceResult[0];
+assert('gameTime'    in paceAnchor, 'pace shape: gameTime present');
+assert('type'        in paceAnchor, 'pace shape: type present');
+assert('myCount'     in paceAnchor, 'pace shape: myCount present');
+assert('enemyCount'  in paceAnchor, 'pace shape: enemyCount present');
+assert('gap'         in paceAnchor, 'pace shape: gap present');
+assert('enemyHero'   in paceAnchor, 'pace shape: enemyHero present');
+assert('triggerItem' in paceAnchor, 'pace shape: triggerItem present');
+assert('significant' in paceAnchor, 'pace shape: significant present');
+assert(Object.keys(paceAnchor).length === 8, 'pace shape: exactly 8 fields');
+
+console.log('\n── scanPaceDeficits: sort order (gameTime ascending) ─────────────────');
+
+const paceSortTimes = recoveryResult.map((a) => a.gameTime);
+for (let i = 1; i < paceSortTimes.length; i++) {
+  assert(paceSortTimes[i] >= paceSortTimes[i - 1], `pace sort: gameTimes[${i}] >= gameTimes[${i - 1}]`);
+}
+
+console.log('\n── scanPaceDeficits: generic list corrections (ultimate_scepter, vanguard, hood) ─');
+
+// ultimate_scepter (the corrected key — real OpenDota purchase_log spelling for
+// Aghanim's Scepter) now matches, and counts toward the enemy's key-item total.
+const paceUltimateScepter = [
+  makePlayer(MY_SLOT, MY_HERO_ID, []),
+  makePlayer(128, 96, [makePurchase('ultimate_scepter', 1000)]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const usResult = scanPaceDeficits(paceUltimateScepter, MY_SLOT);
+assert(usResult.length === 1 && usResult[0].triggerItem === 'ultimate_scepter',
+  'pace: ultimate_scepter counts as a key item (corrected key spelling)');
+
+// vanguard / hood_of_defiance now count toward my own completion total too.
+const paceVanguardHood = [
+  makePlayer(MY_SLOT, MY_HERO_ID, [
+    makePurchase('vanguard', 500),
+    makePurchase('hood_of_defiance', 700),
+  ]),
+  makePlayer(128, 14, [makePurchase('blink', 2000), makePurchase('black_king_bar', 2100), makePurchase('pipe', 2200)]),
+  makePlayer(129, 8,  []),
+  makePlayer(130, 5,  []),
+  makePlayer(131, 4,  []),
+  makePlayer(132, 3,  []),
+];
+const vhResult = scanPaceDeficits(paceVanguardHood, MY_SLOT);
+// At the enemy's 3rd completion (t=2200+grace), my count should be 2 (vanguard + hood), so gap = 3 - 2 = 1.
+const vhLast = vhResult[vhResult.length - 1];
+assert(vhLast.myCount === 2, `pace: vanguard + hood_of_defiance both count toward my total (myCount=2, got ${vhLast.myCount})`);
 
 // ── Summary ────────────────────────────────────────────────────────────────
 

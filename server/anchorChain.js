@@ -6,10 +6,11 @@
 // Takes scanner output as parameters — never imports the scanners themselves.
 // No I/O. Pure transformation.
 //
-// Three scanner sources this layer consumes:
-//   buildDeathDigest()       → deaths[]       (openDotaDeathDigest.js)
+// Four scanner sources this layer consumes:
+//   buildDeathDigest()       → deaths[]         (openDotaDeathDigest.js)
 //   scanMomentumShifts()     → momentumShifts[] (openDotaMomentumScanner.js)
-//   scanSpikeWindowDeltas()  → spikeDeltas[]  (openDotaSpikeWindowScanner.js)
+//   scanSpikeWindowDeltas()  → spikeDeltas[]    (openDotaSpikeWindowScanner.js)
+//   scanPaceDeficits()       → paceDeficits[]   (openDotaSpikeWindowScanner.js)
 
 // ── Bucket Chinese display names ──────────────────────────────────────────
 const BUCKET_ZH = {
@@ -22,10 +23,11 @@ const BUCKET_ZH = {
 };
 
 // ── Tie-break priority for same gameTime: lower number = earlier ──────────
-// death > spike > momentum
+// death > spike > pace > momentum
 // Rationale: "something happened" events (deaths) rank before "state-change"
-// events (spike completions), which rank before "trend analysis" (momentum).
-const KIND_PRIORITY = { death: 0, spike: 1, momentum: 2 };
+// events (spike completions, then aggregate pace state changes), which rank
+// before "trend analysis" (momentum).
+const KIND_PRIORITY = { death: 0, spike: 1, pace: 2, momentum: 3 };
 
 // ── Time helpers ───────────────────────────────────────────────────────────
 
@@ -152,28 +154,58 @@ function spikeToAnchor(delta) {
   };
 }
 
+/**
+ * Map a pace anchor from scanPaceDeficits() to a unified Anchor.
+ *
+ * @param {object} pace  { gameTime, type, myCount, enemyCount, gap,
+ *                          enemyHero, triggerItem, significant }
+ */
+function paceToAnchor(pace) {
+  let severity;
+  let summary;
+
+  if (pace.type === 'pace_recovered') {
+    severity = 'success';
+    summary  = `${fmtTime(pace.gameTime)} 关键装数量追平（${pace.myCount} 件）`;
+  } else {
+    severity = pace.significant ? 'warning' : 'info';
+    summary  = `${fmtTime(pace.gameTime)} 敌方 ${pace.enemyHero} 已 ${pace.enemyCount} 件关键装，我方 ${pace.myCount} 件（落后 ${pace.gap}）`;
+  }
+
+  return {
+    gameTime: pace.gameTime,
+    minute:   Math.floor(pace.gameTime / 60),
+    kind:     'pace',
+    type:     pace.type,
+    severity,
+    summary,
+    detail:   pace,
+  };
+}
+
 // ── Merge ──────────────────────────────────────────────────────────────────
 
 /**
- * Merge three anchor arrays into a single time-ordered chain.
+ * Merge four anchor arrays into a single time-ordered chain.
  *
- * @param {{ deaths?, momentumShifts?, spikeDeltas? }} inputs
+ * @param {{ deaths?, momentumShifts?, spikeDeltas?, paceDeficits? }} inputs
  *   Each array is the direct output of the respective scanner function.
  *   Missing arrays default to [] — no error.
  * @returns {object[]}
  *   Anchors sorted by gameTime ASC.
- *   Same-gameTime tie-break: death (0) > spike (1) > momentum (2).
+ *   Same-gameTime tie-break: death (0) > spike (1) > pace (2) > momentum (3).
  */
-function buildAnchorChain({ deaths = [], momentumShifts = [], spikeDeltas = [] } = {}) {
+function buildAnchorChain({ deaths = [], momentumShifts = [], spikeDeltas = [], paceDeficits = [] } = {}) {
   const anchors = [
     ...deaths.map(deathToAnchor),
     ...momentumShifts.map(momentumToAnchor),
     ...spikeDeltas.map(spikeToAnchor),
+    ...paceDeficits.map(paceToAnchor),
   ];
 
   anchors.sort((a, b) => {
     if (a.gameTime !== b.gameTime) return a.gameTime - b.gameTime;
-    return (KIND_PRIORITY[a.kind] ?? 3) - (KIND_PRIORITY[b.kind] ?? 3);
+    return (KIND_PRIORITY[a.kind] ?? 4) - (KIND_PRIORITY[b.kind] ?? 4);
   });
 
   return anchors;
@@ -184,4 +216,5 @@ module.exports = {
   deathToAnchor,
   momentumToAnchor,
   spikeToAnchor,
+  paceToAnchor,
 };

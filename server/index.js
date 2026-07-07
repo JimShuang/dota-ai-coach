@@ -9,7 +9,7 @@ const {
 const { buildDeathDigest } = require('./openDotaDeathDigest');
 const { buildEconomyTimeseries } = require('./openDotaEconomyTimeseries');
 const { scanMomentumShifts } = require('./openDotaMomentumScanner');
-const { scanSpikeWindowDeltas } = require('./openDotaSpikeWindowScanner');
+const { scanSpikeWindowDeltas, scanPaceDeficits } = require('./openDotaSpikeWindowScanner');
 const { buildAnchorChain } = require('./anchorChain');
 const { linkAllAnchors } = require('./anchorLinker');
 const { evaluate } = require('./rules');
@@ -294,8 +294,9 @@ app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
   const deaths         = buildDeathDigest(detail.events, timeseries);
   const momentumShifts = scanMomentumShifts(timeseries);
   const spikeDeltas    = scanSpikeWindowDeltas(players, m.player_slot);
+  const paceDeficits   = scanPaceDeficits(players, m.player_slot);
 
-  const anchors = buildAnchorChain({ deaths, momentumShifts, spikeDeltas });
+  const anchors = buildAnchorChain({ deaths, momentumShifts, spikeDeltas, paceDeficits });
 
   // Compute causal links: linkAllAnchors runs every rule (A1 death→momentum_loss,
   // A2 death→spike_deficit, A3 death→death) over every ordered anchor pair and

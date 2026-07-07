@@ -652,6 +652,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
               const aColor = { critical: '#f85149', danger: '#f85149', warning: '#e3b341', success: '#56d364', info: '#79c0ff' }[anchor.severity] || '#8b949e';
               const icon = anchor.kind === 'death' ? '💀'
                 : anchor.kind === 'momentum' ? (anchor.type === 'momentum_gain' ? '📈' : '📉')
+                : anchor.kind === 'pace' ? '⚖️'
                 : '⏱️';
 
               // Causal link data for this anchor
@@ -759,6 +760,20 @@ function MatchDetail({ matchId, onBack, onDelete }) {
                               {anchor.detail.significant && <span style={{ color: '#e3b341', marginLeft: '4px' }}>（显著）</span>}
                             </div>
                           )}
+                        </div>
+                      )}
+                      {anchor.kind === 'pace' && anchor.detail && (
+                        <div style={{ marginTop: '4px', padding: '6px 8px', background: '#161b22', borderRadius: '6px', fontSize: '11px', color: '#8b949e', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                          <div>
+                            我方 <span style={{ color: '#79c0ff' }}>{anchor.detail.myCount}</span> 件
+                            {' / 敌方 '}
+                            <span style={{ color: '#f0883e' }}>{anchor.detail.enemyCount}</span> 件
+                            {anchor.detail.enemyHero != null && <>（<span style={{ color: '#f0883e' }}>{anchor.detail.enemyHero}</span>）</>}
+                          </div>
+                          <div>
+                            触发装备 <span style={{ color: '#79c0ff' }}>{itemDisplayName(`item_${anchor.detail.triggerItem}`)}</span>
+                            {anchor.detail.significant && <span style={{ color: '#e3b341', marginLeft: '4px' }}>（显著）</span>}
+                          </div>
                         </div>
                       )}
                     </div>

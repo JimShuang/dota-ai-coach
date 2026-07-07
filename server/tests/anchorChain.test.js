@@ -15,6 +15,7 @@ const {
   deathToAnchor,
   momentumToAnchor,
   spikeToAnchor,
+  paceToAnchor,
 } = require('../anchorChain');
 
 let passed = 0;
@@ -67,6 +68,20 @@ function makeMomentumShift(minute, type) {
     slopeAfter:  type === 'momentum_loss' ? -600 : 600,
     magnitude:   1200,
     advAtShift:  2000,
+  };
+}
+
+function makePaceAnchor(gameTime, type, overrides) {
+  return {
+    gameTime,
+    type,             // 'pace_deficit' | 'pace_recovered'
+    myCount:    2,
+    enemyCount: 3,
+    gap:        1,
+    enemyHero:  'Axe',
+    triggerItem: 'blink',
+    significant: type === 'pace_deficit',
+    ...overrides,
   };
 }
 
@@ -250,6 +265,43 @@ for (const [bucket, zh] of Object.entries(bucketMap)) {
   assert(a.summary.includes(zh), `bucket ${bucket} → summary contains ${zh}`);
 }
 
+// ── paceToAnchor ───────────────────────────────────────────────────────────
+
+console.log('\n── paceToAnchor: field mapping — pace_deficit ────────────────────────');
+
+const paceDefSig = makePaceAnchor(1800, 'pace_deficit', { myCount: 2, enemyCount: 4, gap: 2, enemyHero: '斧王（Axe）', triggerItem: 'black_king_bar', significant: true });
+const anchorPaceDefSig = paceToAnchor(paceDefSig);
+
+assert(anchorPaceDefSig.gameTime === 1800,          'pace deficit: gameTime = pace.gameTime');
+assert(anchorPaceDefSig.minute   === 30,            'pace deficit: minute = floor(1800/60)');
+assert(anchorPaceDefSig.kind     === 'pace',        'pace deficit: kind = pace');
+assert(anchorPaceDefSig.type     === 'pace_deficit', 'pace deficit: type = pace_deficit');
+assert(anchorPaceDefSig.severity === 'warning',     'pace deficit + significant: severity = warning');
+assert(anchorPaceDefSig.summary.includes('斧王（Axe）'), 'pace deficit: summary contains enemyHero');
+assert(anchorPaceDefSig.summary.includes('4'),      'pace deficit: summary contains enemyCount');
+assert(anchorPaceDefSig.summary.includes('2'),      'pace deficit: summary contains myCount/gap');
+assert(anchorPaceDefSig.detail === paceDefSig,      'pace deficit: detail is original pace object');
+
+console.log('\n── paceToAnchor: pace_deficit not significant → info ────────────────');
+
+const paceDefNotSig = makePaceAnchor(1200, 'pace_deficit', { gap: 1, significant: false });
+const anchorPaceDefNotSig = paceToAnchor(paceDefNotSig);
+assert(anchorPaceDefNotSig.severity === 'info',
+  'pace deficit not significant: severity = info (offlane 1-item gap is expected, not a warning)');
+
+console.log('\n── paceToAnchor: pace_recovered → success ───────────────────────────');
+
+const paceRec = makePaceAnchor(2000, 'pace_recovered', { myCount: 4, enemyCount: 4, gap: 0, significant: false });
+const anchorPaceRec = paceToAnchor(paceRec);
+assert(anchorPaceRec.severity === 'success',        'pace recovered: severity = success');
+assert(anchorPaceRec.summary.includes('追平'),      'pace recovered: summary contains 追平');
+assert(anchorPaceRec.summary.includes('4'),         'pace recovered: summary contains myCount');
+assert(anchorPaceRec.detail === paceRec,            'pace recovered: detail is original pace object');
+
+console.log('\n── paceToAnchor: shape (7 fields, matches other mappers) ───────────');
+
+assert(Object.keys(anchorPaceDefSig).length === 7, 'pace: exactly 7 fields (same shape as other anchors)');
+
 // ── buildAnchorChain: sorting and merge ───────────────────────────────────
 
 console.log('\n── buildAnchorChain: gameTime ascending ─────────────────────────────');
@@ -267,20 +319,40 @@ for (let i = 1; i < gameTimes.length; i++) {
   assert(gameTimes[i] >= gameTimes[i - 1], `sort: gameTimes[${i}] >= gameTimes[${i - 1}]`);
 }
 
-console.log('\n── buildAnchorChain: tie-break death > spike > momentum ─────────────');
+console.log('\n── buildAnchorChain: tie-break death > spike > pace > momentum ──────');
 
 // Construct entries all at the same gameTime (600 s = minute 10).
 const tieDeaths   = [makeDeathEntry(600, 'danger', null)];
 const tieShifts   = [makeMomentumShift(10, 'momentum_loss')];        // gameTime = 10*60 = 600
 const tieDeltas   = [makeSpikeDelta(600, 'spike_deficit', 'control', 50, false)]; // gameTime=600
+const tiePace     = [makePaceAnchor(600, 'pace_deficit')];            // gameTime=600
 
-const tieChain = buildAnchorChain({ deaths: tieDeaths, momentumShifts: tieShifts, spikeDeltas: tieDeltas });
+const tieChain = buildAnchorChain({ deaths: tieDeaths, momentumShifts: tieShifts, spikeDeltas: tieDeltas, paceDeficits: tiePace });
 
-assert(tieChain.length === 3,              'tie-break: 3 anchors');
+assert(tieChain.length === 4,              'tie-break: 4 anchors');
 assert(tieChain[0].kind === 'death',       'tie-break: death first');
 assert(tieChain[1].kind === 'spike',       'tie-break: spike second');
-assert(tieChain[2].kind === 'momentum',    'tie-break: momentum last');
+assert(tieChain[2].kind === 'pace',        'tie-break: pace third');
+assert(tieChain[3].kind === 'momentum',    'tie-break: momentum last');
 assert(tieChain.every((a) => a.gameTime === 600), 'tie-break: all gameTime=600');
+
+console.log('\n── buildAnchorChain: four-array merge (paceDeficits) ────────────────');
+
+const fourWayChain = buildAnchorChain({
+  deaths:         [makeDeathEntry(1800, 'danger', null)],
+  momentumShifts: [makeMomentumShift(20, 'momentum_loss')],  // gameTime=1200
+  spikeDeltas:    [makeSpikeDelta(600, 'spike_deficit', 'support', 90, false)], // gameTime=600
+  paceDeficits:   [makePaceAnchor(900, 'pace_deficit')],
+});
+assert(fourWayChain.length === 4,                'four-way: 4 anchors total');
+assert(fourWayChain.map((a) => a.kind).join(',') === 'spike,pace,momentum,death',
+  'four-way: ascending gameTime order across all four kinds (600,900,1200,1800)');
+
+console.log('\n── buildAnchorChain: only paceDeficits ───────────────────────────────');
+
+const onlyPace = buildAnchorChain({ paceDeficits: [makePaceAnchor(500, 'pace_recovered')] });
+assert(onlyPace.length === 1,          'only pace: 1 anchor');
+assert(onlyPace[0].kind === 'pace',    'only pace: kind=pace');
 
 console.log('\n── buildAnchorChain: partial / empty inputs ─────────────────────────');
 
