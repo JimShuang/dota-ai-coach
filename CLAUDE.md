@@ -74,6 +74,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas (exact-item-match only), and `scanPaceDeficits(players, selectedPlayerSlot)` — fourth anchor class; aggregate key-item-count deficit/recovery, both decoupled from event/death/digest/timeseries/momentum modules |
 | `server/anchorChain.js` | Pure convergence layer: maps the four anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
 | `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; `scoreA3()`, `ruleA3()` — links death anchors to following death anchors (chain death); `scoreA4()`, `ruleA4()` — links significant pace_deficit anchors to a following death still within the open deficit episode; `linkAllAnchors()` — dispatcher running all rules over every anchor pair; exports `GAP_THRESHOLD`, `A2_MAX_GAP`, `A3_MAX_GAP`, `A3_QUICK_GAP`, `A4_MAX_GAP`, `A4_NEAR_GAP`. |
+| `server/matchDigest.js` | Pure digest assembly layer: `buildMatchDigest()` — turns anchors + links + match meta + key item timings into a single structured object (meta / causal_chains / standalone_anchors / stats). This is the intended future input to an AI post-game review — no LLM call happens here, and none is planned in this module. |
 
 ---
 
@@ -370,11 +371,12 @@ server/tests/
   openDotaSpikeWindowScanner.test.js  147 assertions — decoupling, degenerate inputs, spike_lead, spike_deficit (exact-match only, no bucket fallback), fastest-enemy selection, only-my-bucket (null-delta unique anchor), only-enemy-bucket, multi-item one-anchor-per-item (same-item match or null-delta), significant threshold, sort order, anchor shape, dire slot, profile hero display name; scanPaceDeficits: degenerate inputs, unparsed vs. my-0-items distinction, enemy-0-items, grace window, gap escalation dedup, no-re-emit-below-watermark, recovery + repeated cycles, recoveredAt backfill (never-recovers, single-episode share, independent multi-cycle), purchase dedup, anchor shape, sort order, ultimate_scepter/vanguard/hood_of_defiance key corrections
   anchorChain.test.js                 122 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), paceToAnchor (deficit significant/not-significant severity, recovered, shape), buildAnchorChain (gameTime ascending, tie-break incl. pace, four-array merge, partial inputs, shape)
   anchorLinker.test.js                229 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1, rejects kind='pace' anchorB); A3: scoreA3 (three tiers incl. OD-import reachability via isLethalDeath), ruleA3 (two gates, deathNumber/deathsAtDeath fallback, link shape, evidence fields, multi-death chain d1→d2/d2→d3/d1→d3); A4: scoreA4 (three tiers), ruleA4 (three gates, recoveredAt domain check ★ incl. before/at/after-death and never-recovered cases, no_trade signal incl. defensive missing-context read, link shape, evidence fields, multi-death, non-interference with A1-A3); linkAllAnchors (degenerate inputs, all four rules fire independently with correct relation/from/to, no cross-rule interference, A4 surfaced end-to-end via the dispatcher)
+  matchDigest.test.js                  64 assertions — RULE_ENDPOINTS shape; endpoint resolution (A3 death→death distinct anchors, same-gameTime different-kind disambiguation, unresolvable link → warning not throw, unknown rule → warning); chain assembly (single link, shared-anchor multi-hop merge, branching fan-out, disjoint groups sorted by span.start, max_confidence strong-beats-weak); standalone anchors + slimming (unlinked anchors only, sorted, no detail field on digest anchors, link.evidence preserved verbatim); boundary conditions (links empty, anchors empty, full meta/stats passthrough incl. grade=overall_grade, missing-field → null, no-args call)
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1400 assertions must pass before merging any change.
+All 1464 assertions must pass before merging any change.
 
 ---
 
@@ -1254,6 +1256,72 @@ const RELATION_META = {
 
 ---
 
+## Match Digest
+
+Convergence layer implemented in `server/matchDigest.js`. Pure function — no I/O, no DB, does not import any scanner/linker module. Takes anchors + links (the output of `buildAnchorChain` + `linkAllAnchors`) plus a match's meta row and `key_item_timings` rows, and assembles them into a single structured object. **This is the intended eventual input to an AI post-game review — this module only assembles structured data; no LLM call happens here or anywhere in the codebase yet.**
+
+### Why this layer exists
+
+A1-A4 links carry only two gameTimes (`{from, to}`), not anchor identity, and a single anchor can be the endpoint of several links at once — e.g. a death anchor is simultaneously A4's `to` and A1/A2/A3's `from`. The links therefore form a branching graph, not a flat list of independent pairs. Two problems this layer solves:
+
+1. **Endpoint resolution** — `RULE_ENDPOINTS` (rule → `{fromKind, toKind}`) resolves a link's `{from, to}` gameTimes back to concrete anchors, matching on **gameTime + kind**, never gameTime alone (a `pace` and a `death` anchor can share the same second). This is the backend twin of the frontend's `RELATION_META` in `MatchHistory.jsx` — **adding a new rule (A5+) requires updating both tables.**
+2. **Chain assembly** — a "causal chain" is a **connected component** (union-find over shared anchor nodes), not a linear path. Branching (one death feeding both A1 and A2) and multi-hop chaining (pace → death via A4, then that same death → momentum via A1) both collapse into a single chain object.
+
+### Four-part digest shape
+
+```js
+{
+  meta: { hero, result, duration, kda: { kills, deaths, assists }, gpm, xpm, grade },
+  causal_chains: [ {
+    id,                    // 'chain_1', 'chain_2', … assigned after sorting by span.start
+    span: { start, end },  // min/max gameTime among the chain's anchors
+    anchors: [ slimAnchor ],  // chain's anchors, gameTime ASC
+    links:   [ link ],        // original link objects verbatim (rule/relation/confidence/evidence)
+    anchor_count, link_count,
+    max_confidence,        // highest of the chain's links: strong > medium > weak
+    is_multi_hop,          // link_count >= 2 — a real multi-anchor chain, not a single link
+  } ],
+  standalone_anchors: [ slimAnchor ],  // anchors that are not an endpoint of any link, gameTime ASC
+  stats: {
+    deaths_summary: { total, pre_key_item, in_power_spike, no_tp },
+    key_item_timings,      // raw key_item_timings rows, passed through verbatim
+  },
+  warnings: [ string ],     // non-fatal issues (unresolvable link, unknown rule) — never thrown
+}
+```
+
+### Anchor slimming (token economy)
+
+Anchors inside a digest — both in `causal_chains[].anchors` and `standalone_anchors` — are reduced to `{ gameTime, minute, kind, type, severity, summary }`. **`detail` is dropped.** Causal evidence for *why* two anchors are linked already lives on `link.evidence`; a downstream consumer that needs the richer per-anchor detail (e.g. full death-digest context, economy timeseries figures) queries `/anchor-chain` instead. `link` objects themselves are kept verbatim, including `evidence`.
+
+### `stats.deaths_summary` — partial by design
+
+`total` and `pre_key_item` are read straight from the `matches` row (`deaths`, `pre_key_item_deaths`). `in_power_spike` and `no_tp` are always `null` — there is no aggregate column for either in `matches`; only the per-death snapshot field `wasInPowerSpikeWindow` and the `no_tp_warning` event type exist, and neither is rolled up into a match-level count. Documented here rather than silently omitted, so a consumer doesn't mistake `null` for "zero."
+
+### `warnings` mechanism
+
+Populated when a link can't be resolved to concrete anchors (dangling `{from, to}` — e.g. an anchor was filtered out upstream) or when `link.rule` isn't in `RULE_ENDPOINTS` (defensive — should never happen given `linkAllAnchors`' fixed rule set). The link is silently dropped from `causal_chains` in either case — the digest never throws.
+
+### Boundary conditions
+
+- `links` empty → `causal_chains: []`; every anchor lands in `standalone_anchors`.
+- `anchors` empty → all three of `causal_chains` / `standalone_anchors` are empty (links can't resolve against no anchors — each becomes a warning); `meta` / `stats` are computed regardless, since they come from `matchMeta` / `keyItemTimings`, not `anchors`.
+- A causal cycle can never occur (every link has `from < to`), but the union-find implementation tolerates one without special-casing.
+
+### API
+
+| Method | Route | Effect |
+|--------|-------|--------|
+| `GET` | `/api/history/matches/:matchId/digest` | Returns the full digest (see shape above). 404 if match not found. Un-parsed / no-anchor matches degrade to empty `causal_chains` / `standalone_anchors`, never an error. |
+
+**Shared orchestration:** `computeAnchorsAndLinks(detail)` in `server/index.js` (extracted from the former `/anchor-chain` handler) builds `{ anchors, links }` from a match detail row — the economy timeseries lookup, the four scanners, `buildAnchorChain`, and `linkAllAnchors`. Both `/anchor-chain` and `/digest` call this one function, so the anchors+links computation lives in exactly one place.
+
+### Frontend
+
+No UI consumes this endpoint yet — the existing anchor-chain timeline and 逻辑链 cards in `MatchHistory.jsx` already cover the human-readable view. `/digest` exists for a future machine consumer (e.g. an AI review step), which is out of scope for this feature.
+
+---
+
 ## Future roadmap
 
 ### Near-term
@@ -1297,6 +1365,7 @@ dota-ai-coach/
 │   ├── openDotaSpikeWindowScanner.js  ← Pure: scanSpikeWindowDeltas(players, slot) (per-item) + scanPaceDeficits(players, slot) (aggregate) — two decoupled anchor scanners
 │   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor / paceToAnchor + buildAnchorChain()
 │   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 / scoreA3 / ruleA3 / scoreA4 / ruleA4 / linkAllAnchors + GAP_THRESHOLD / A2_MAX_GAP / A3_MAX_GAP / A3_QUICK_GAP / A4_MAX_GAP / A4_NEAR_GAP
+│   ├── matchDigest.js                 ← Pure digest assembly: buildMatchDigest() — anchors+links+meta+timings → { meta, causal_chains, standalone_anchors, stats, warnings }; future AI-review input, no LLM call
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
@@ -1327,6 +1396,7 @@ dota-ai-coach/
 │       ├── openDotaSpikeWindowScanner.test.js   ← 147 assertions (decoupling, spike_lead/deficit exact-match only, multi-item per-item, null-delta unique, fastest enemy, sort, significant; scanPaceDeficits: escalation dedup, grace window, recovery cycles, recoveredAt backfill, dedup, key corrections)
 │       ├── anchorChain.test.js                  ← 122 assertions (decoupling, all mappers incl. paceToAnchor, merge sort, tie-break incl. pace, four-array merge, shape)
 │       ├── anchorLinker.test.js                 ← 229 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2, scoreA3/ruleA3, scoreA4/ruleA4 gates + recoveredAt domain check + evidence, linkAllAnchors dispatcher incl. A4 end-to-end)
+│       ├── matchDigest.test.js                  ← 64 assertions (RULE_ENDPOINTS, endpoint resolution incl. same-gameTime disambiguation + unresolvable/unknown-rule warnings, chain assembly incl. multi-hop + branching + disjoint groups, standalone anchors + slimming, boundary conditions + meta/stats passthrough)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

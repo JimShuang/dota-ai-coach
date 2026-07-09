@@ -12,6 +12,7 @@ const { scanMomentumShifts } = require('./openDotaMomentumScanner');
 const { scanSpikeWindowDeltas, scanPaceDeficits } = require('./openDotaSpikeWindowScanner');
 const { buildAnchorChain } = require('./anchorChain');
 const { linkAllAnchors } = require('./anchorLinker');
+const { buildMatchDigest } = require('./matchDigest');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -273,10 +274,11 @@ app.get('/api/history/matches/:matchId/economy-timeseries', (req, res) => {
   res.json(buildEconomyTimeseries(cached.raw_json, m.player_slot));
 });
 
-app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
-  const detail = getMatchById(req.params.matchId);
-  if (!detail) return res.status(404).json({ error: 'Match not found' });
-
+// Shared orchestration: builds the unified anchor chain + causal links for a
+// match detail row. Used by both /anchor-chain and /digest so the anchors+links
+// computation (economy timeseries -> four scanners -> buildAnchorChain ->
+// linkAllAnchors) lives in exactly one place.
+function computeAnchorsAndLinks(detail) {
   const m = detail.match;
   let timeseries = null;
   let players    = [];
@@ -299,11 +301,34 @@ app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
   const anchors = buildAnchorChain({ deaths, momentumShifts, spikeDeltas, paceDeficits });
 
   // Compute causal links: linkAllAnchors runs every rule (A1 death→momentum_loss,
-  // A2 death→spike_deficit, A3 death→death) over every ordered anchor pair and
-  // returns the endpoint-facing link shape directly.
+  // A2 death→spike_deficit, A3 death→death, A4 pace_deficit→death) over every
+  // ordered anchor pair and returns the endpoint-facing link shape directly.
   const links = linkAllAnchors(anchors);
 
+  return { anchors, links };
+}
+
+app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+  const { anchors, links } = computeAnchorsAndLinks(detail);
   res.json({ anchors, links });
+});
+
+app.get('/api/history/matches/:matchId/digest', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+  const { anchors, links } = computeAnchorsAndLinks(detail);
+  const digest = buildMatchDigest({
+    matchMeta:      detail.match,
+    anchors,
+    links,
+    keyItemTimings: detail.keyItemTimings,
+  });
+
+  res.json(digest);
 });
 
 app.get('/api/history/stats', (req, res) => {

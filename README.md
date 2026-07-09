@@ -50,6 +50,8 @@ C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game\dota\cfg\gamestat
 | API (历史帧) | http://localhost:3001/api/states/:matchId?from=600&to=660 |
 | API (历史记录列表) | http://localhost:3001/api/history/matches?limit=50 |
 | API (历史记录详情) | http://localhost:3001/api/history/matches/:matchId |
+| API (关键时刻链) | http://localhost:3001/api/history/matches/:matchId/anchor-chain |
+| API (Match Digest) | http://localhost:3001/api/history/matches/:matchId/digest |
 | API (长期统计) | http://localhost:3001/api/history/stats?recent=10 |
 | API (比赛预览/10人) | http://localhost:3001/history/import/preview |
 | API (比赛导入确认) | http://localhost:3001/history/import/confirm |
