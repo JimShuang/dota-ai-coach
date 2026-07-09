@@ -74,7 +74,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/openDotaSpikeWindowScanner.js` | Pure: `scanSpikeWindowDeltas(players, selectedPlayerSlot)` — third anchor class; enemy vs. player spike timing deltas (exact-item-match only), and `scanPaceDeficits(players, selectedPlayerSlot)` — fourth anchor class; aggregate key-item-count deficit/recovery, both decoupled from event/death/digest/timeseries/momentum modules |
 | `server/anchorChain.js` | Pure convergence layer: maps the four anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
 | `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; `scoreA3()`, `ruleA3()` — links death anchors to following death anchors (chain death); `scoreA4()`, `ruleA4()` — links significant pace_deficit anchors to a following death still within the open deficit episode; `linkAllAnchors()` — dispatcher running all rules over every anchor pair; exports `GAP_THRESHOLD`, `A2_MAX_GAP`, `A3_MAX_GAP`, `A3_QUICK_GAP`, `A4_MAX_GAP`, `A4_NEAR_GAP`. |
-| `server/matchDigest.js` | Pure digest assembly layer: `buildMatchDigest()` — turns anchors + links + match meta + key item timings into a single structured object (meta / causal_chains / standalone_anchors / stats). This is the intended future input to an AI post-game review — no LLM call happens here, and none is planned in this module. |
+| `server/matchDigest.js` | Pure digest assembly layer: `buildMatchDigest()` — turns anchors + links + match meta + key item timings into a single structured object (`schema_version` / meta / causal_chains / standalone_anchors / stats / warnings), validated against `server/schemas/matchDigest.schema.json`. This is the intended future input to an AI post-game review — no LLM call happens here, and none is planned in this module. |
 
 ---
 
@@ -372,11 +372,12 @@ server/tests/
   anchorChain.test.js                 122 assertions — decoupling (no scanner imports), deathToAnchor (all summary templates, negative gameTime, severity passthrough), momentumToAnchor (minute×60, severity, summary), spikeToAnchor (all buckets 中文, deficit/lead severity, duration format, null-delta unique spike), paceToAnchor (deficit significant/not-significant severity, recovered, shape), buildAnchorChain (gameTime ascending, tie-break incl. pace, four-array merge, partial inputs, shape)
   anchorLinker.test.js                229 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1, rejects kind='pace' anchorB); A3: scoreA3 (three tiers incl. OD-import reachability via isLethalDeath), ruleA3 (two gates, deathNumber/deathsAtDeath fallback, link shape, evidence fields, multi-death chain d1→d2/d2→d3/d1→d3); A4: scoreA4 (three tiers), ruleA4 (three gates, recoveredAt domain check ★ incl. before/at/after-death and never-recovered cases, no_trade signal incl. defensive missing-context read, link shape, evidence fields, multi-death, non-interference with A1-A3); linkAllAnchors (degenerate inputs, all four rules fire independently with correct relation/from/to, no cross-rule interference, A4 surfaced end-to-end via the dispatcher)
   matchDigest.test.js                  64 assertions — RULE_ENDPOINTS shape; endpoint resolution (A3 death→death distinct anchors, same-gameTime different-kind disambiguation, unresolvable link → warning not throw, unknown rule → warning); chain assembly (single link, shared-anchor multi-hop merge, branching fan-out, disjoint groups sorted by span.start, max_confidence strong-beats-weak); standalone anchors + slimming (unlinked anchors only, sorted, no detail field on digest anchors, link.evidence preserved verbatim); boundary conditions (links empty, anchors empty, full meta/stats passthrough incl. grade=overall_grade, missing-field → null, no-args call)
+  matchDigestSchema.test.js            21 assertions — ajv (draft 2020-12) compiles server/schemas/matchDigest.schema.json without error; full-shape digest (all four rules + multi-hop chain + standalone anchors + negative gameTime) validates; empty-match and no-args digests validate; negative fixtures confirm strictness actually rejects: extra top-level property, illegal confidence enum, A1 link with A2-shaped evidence, mismatched rule/relation pairing, chain missing anchors / <2 anchors / 0 links, malformed chain id, out-of-enum result/grade, leaked detail field on a slim anchor, wrong schema_version, key_item_timings row missing a required field, deaths_summary extra key
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1464 assertions must pass before merging any change.
+All 1485 assertions must pass before merging any change.
 
 ---
 
@@ -1169,7 +1170,7 @@ if (recoveredAt != null && recoveredAt <= anchorB.gameTime) return null; // alre
 
 ### Backend wiring (`server/index.js`)
 
-Adding a third rule converged link collection into a dispatcher, **`linkAllAnchors(anchors)`**, exported from `anchorLinker.js`. It replaces the endpoint's former inline double-loop (which handled only A1+A2). It iterates every ordered anchor pair (`a` before `b`, gameTime ascending), breaks the inner loop once the gap exceeds `Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP, A4_MAX_GAP)` (currently `GAP_THRESHOLD` and `A4_MAX_GAP` tie at 300s, the largest), and tries `[ruleA1, ruleA2, ruleA3, ruleA4]` on each pair — collecting every non-null result directly into the endpoint-facing link shape (the relation string is looked up via an internal `RELATION_BY_RULE` map). The `/anchor-chain` endpoint just calls `linkAllAnchors(anchors)` and returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches). A future A5 rule only needs to be added to `ALL_RULES`/`RELATION_BY_RULE` inside `anchorLinker.js` — the endpoint doesn't change.
+Adding a third rule converged link collection into a dispatcher, **`linkAllAnchors(anchors)`**, exported from `anchorLinker.js`. It replaces the endpoint's former inline double-loop (which handled only A1+A2). It iterates every ordered anchor pair (`a` before `b`, gameTime ascending), breaks the inner loop once the gap exceeds `Math.max(GAP_THRESHOLD, A2_MAX_GAP, A3_MAX_GAP, A4_MAX_GAP)` (currently `GAP_THRESHOLD` and `A4_MAX_GAP` tie at 300s, the largest), and tries `[ruleA1, ruleA2, ruleA3, ruleA4]` on each pair — collecting every non-null result directly into the endpoint-facing link shape (the relation string is looked up via an internal `RELATION_BY_RULE` map). The `/anchor-chain` endpoint just calls `linkAllAnchors(anchors)` and returns `{ anchors, links }` (links defaults to `[]` for GSI-only or un-parsed matches). A future A5 rule needs to be added to `ALL_RULES`/`RELATION_BY_RULE` inside `anchorLinker.js` (the endpoint itself doesn't change) — plus three more places: `RULE_ENDPOINTS` in `server/matchDigest.js`, `RELATION_META` in the frontend (`MatchHistory.jsx`), and the evidence discriminated union in `server/schemas/matchDigest.schema.json`. See **Match Digest → Schema 契约** for the full four-piece checklist; the schema is `additionalProperties:false`, so forgetting it is caught by `matchDigestSchema.test.js` rather than drifting silently.
 
 **The outer loop admits both `kind: 'death'` and `kind: 'pace'` anchors as `a`** — A1-A3 require `anchorA.kind === 'death'`; A4 requires `anchorA.kind === 'pace'` (type `'pace_deficit'`). Each rule's own gate 1 rejects the kind it doesn't apply to (e.g. `ruleA4` called with a death `anchorA` returns `null` via its gate 1, same as `ruleA1` called with a pace `anchorA` returns `null` via its gate 1) — no cross-rule confusion, verified by dedicated tests in `anchorLinker.test.js`. Before A4, pace anchors never participated in any rule at all; adding a rule whose trigger is a non-death anchor required this one dispatcher change (the `a.kind !== 'death'` skip became `a.kind !== 'death' && a.kind !== 'pace'`) — everything else about the dispatcher's shape held.
 
@@ -1264,7 +1265,7 @@ Convergence layer implemented in `server/matchDigest.js`. Pure function — no I
 
 A1-A4 links carry only two gameTimes (`{from, to}`), not anchor identity, and a single anchor can be the endpoint of several links at once — e.g. a death anchor is simultaneously A4's `to` and A1/A2/A3's `from`. The links therefore form a branching graph, not a flat list of independent pairs. Two problems this layer solves:
 
-1. **Endpoint resolution** — `RULE_ENDPOINTS` (rule → `{fromKind, toKind}`) resolves a link's `{from, to}` gameTimes back to concrete anchors, matching on **gameTime + kind**, never gameTime alone (a `pace` and a `death` anchor can share the same second). This is the backend twin of the frontend's `RELATION_META` in `MatchHistory.jsx` — **adding a new rule (A5+) requires updating both tables.**
+1. **Endpoint resolution** — `RULE_ENDPOINTS` (rule → `{fromKind, toKind}`) resolves a link's `{from, to}` gameTimes back to concrete anchors, matching on **gameTime + kind**, never gameTime alone (a `pace` and a `death` anchor can share the same second). This is the backend twin of the frontend's `RELATION_META` in `MatchHistory.jsx` — **adding a new rule (A5+) requires updating both tables, plus the JSON schema (see Schema 契约 below).**
 2. **Chain assembly** — a "causal chain" is a **connected component** (union-find over shared anchor nodes), not a linear path. Branching (one death feeding both A1 and A2) and multi-hop chaining (pace → death via A4, then that same death → momentum via A1) both collapse into a single chain object.
 
 ### Four-part digest shape
@@ -1320,6 +1321,26 @@ Populated when a link can't be resolved to concrete anchors (dangling `{from, to
 
 No UI consumes this endpoint yet — the existing anchor-chain timeline and 逻辑链 cards in `MatchHistory.jsx` already cover the human-readable view. `/digest` exists for a future machine consumer (e.g. an AI review step), which is out of scope for this feature.
 
+### Schema 契约
+
+`server/schemas/matchDigest.schema.json` — JSON Schema **draft 2020-12**, describing exactly what `buildMatchDigest()` produces. Purpose: (1) give a downstream consumer (an eventual AI-prompt builder) a formal field contract to code against instead of reading `matchDigest.js`; (2) catch any code change that silently drifts the digest shape — including a new anchor-link rule that forgets one of its wiring spots.
+
+**Strict by design.** Every object in the schema sets `additionalProperties: false`, all the way down (`meta`, `kda`, `stats`, `deathsSummary`, `keyItemTiming`, `chain`, `span`, `link`, `slimAnchor`, every `evidenceA*`). Catching drift is the schema's entire reason for existing, so an unplanned extra field must fail validation, not pass silently. **Any deliberate field addition still requires a schema edit** (there is no "open" object anywhere) — the tradeoff is explicit: false positives ("schema test fails, but the change was intentional") are the cost of never getting a false negative ("shape drifted, schema said nothing").
+
+**Evidence discriminated union.** `$defs/link` uses `allOf` + four `if/then` blocks keyed on the sibling `rule` field (`A1`–`A4`), each pinning both `relation` (via `const`) and `evidence` (via a `$ref` to that rule's own strict `evidenceA*` sub-schema — see `anchorLinker.js` for the authoritative field lists: A1 `gap_seconds/death_severity/chain_deaths/economy_significant/lethal/slope_after/magnitude`; A2 adds nullable `economy_delta/enemy_item/enemy_item_time`; A3 nullable `first_death_number/second_death_number`; A4 nullable `recovered_at`). This is what makes "an A1 link carrying A2-shaped evidence" a validation failure rather than a silently-tolerated shape.
+
+**Four-piece checklist for a new rule (A5+).** All four must be updated together, or `matchDigestSchema.test.js` (and, for the last one, the anchor-chain frontend) will start failing/drifting:
+1. Rule function + `RELATION_BY_RULE` entry in `anchorLinker.js`
+2. `RULE_ENDPOINTS` entry in `matchDigest.js`
+3. `RELATION_META` entry in `MatchHistory.jsx` (frontend rendering)
+4. New `$defs/evidenceA5` + a fifth `if/then` branch in `matchDigest.schema.json`
+
+**`schema_version`.** `buildMatchDigest()`'s return value carries a top-level `schema_version` (currently `1`, `DIGEST_SCHEMA_VERSION` constant in `matchDigest.js`), checked in the schema via `const: 1`. Version policy: a **breaking** change (a field removed, a type changed, an enum value removed) bumps `DIGEST_SCHEMA_VERSION` and updates the schema's `const` together. A **pure addition** (new optional-in-practice field, new enum value) still requires editing the schema — strict mode won't compile a mismatch away — but does not require a version bump, since existing consumers reading old fields are unaffected.
+
+**Validation is test-time only, not request-time.** The `/digest` endpoint does not run ajv on its own output — digest is self-produced data (not external input), so runtime validation would be pure overhead with no security/correctness benefit; the contract is enforced by `matchDigestSchema.test.js` on every test run instead. Revisit this if `/digest` ever accepts externally-supplied data.
+
+**ajv is a devDependency only** (`server/package.json`, `ajv@^8`, loaded via `ajv/dist/2020` for 2020-12 support) — used exclusively by `matchDigestSchema.test.js`; no runtime module imports it.
+
 ---
 
 ## Future roadmap
@@ -1365,8 +1386,10 @@ dota-ai-coach/
 │   ├── openDotaSpikeWindowScanner.js  ← Pure: scanSpikeWindowDeltas(players, slot) (per-item) + scanPaceDeficits(players, slot) (aggregate) — two decoupled anchor scanners
 │   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor / paceToAnchor + buildAnchorChain()
 │   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 / scoreA3 / ruleA3 / scoreA4 / ruleA4 / linkAllAnchors + GAP_THRESHOLD / A2_MAX_GAP / A3_MAX_GAP / A3_QUICK_GAP / A4_MAX_GAP / A4_NEAR_GAP
-│   ├── matchDigest.js                 ← Pure digest assembly: buildMatchDigest() — anchors+links+meta+timings → { meta, causal_chains, standalone_anchors, stats, warnings }; future AI-review input, no LLM call
+│   ├── matchDigest.js                 ← Pure digest assembly: buildMatchDigest() — anchors+links+meta+timings → { schema_version, meta, causal_chains, standalone_anchors, stats, warnings }; future AI-review input, no LLM call
 │   ├── coach.db                       ← SQLite database (auto-created)
+│   ├── schemas/
+│   │   └── matchDigest.schema.json    ← JSON Schema (draft 2020-12) contract for buildMatchDigest() output; strict (additionalProperties:false throughout), evidence discriminated union keyed on link.rule
 │   ├── data/
 │   │   ├── offlaneHeroProfiles.js     ← 7 profiles, ITEM_COSTS, ITEM_DISPLAY_NAMES
 │   │   ├── itemLocalization.js        ← 90+ item Chinese names, getDisplayName()
@@ -1397,6 +1420,7 @@ dota-ai-coach/
 │       ├── anchorChain.test.js                  ← 122 assertions (decoupling, all mappers incl. paceToAnchor, merge sort, tie-break incl. pace, four-array merge, shape)
 │       ├── anchorLinker.test.js                 ← 229 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2, scoreA3/ruleA3, scoreA4/ruleA4 gates + recoveredAt domain check + evidence, linkAllAnchors dispatcher incl. A4 end-to-end)
 │       ├── matchDigest.test.js                  ← 64 assertions (RULE_ENDPOINTS, endpoint resolution incl. same-gameTime disambiguation + unresolvable/unknown-rule warnings, chain assembly incl. multi-hop + branching + disjoint groups, standalone anchors + slimming, boundary conditions + meta/stats passthrough)
+│       ├── matchDigestSchema.test.js            ← 21 assertions (ajv 2020-12 compiles schema; full-shape + empty + no-args digests validate; negative fixtures prove strictness: extra prop, bad enum, evidence/rule mismatch, chain shape violations, out-of-enum result/grade, leaked detail, wrong schema_version, incomplete key_item_timings row, extra deaths_summary key)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

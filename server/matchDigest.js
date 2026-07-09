@@ -25,6 +25,12 @@ const RULE_ENDPOINTS = {
   A4: { fromKind: 'pace',  toKind: 'death' },
 };
 
+// Bump only on a breaking change to the digest shape (removed field, changed
+// type, changed enum) and update server/schemas/matchDigest.schema.json in the
+// same change. A pure additive field still requires a schema edit (the schema
+// is additionalProperties:false throughout) but does not require a version bump.
+const DIGEST_SCHEMA_VERSION = 1;
+
 const CONFIDENCE_RANK = { strong: 3, medium: 2, weak: 1 };
 
 function nodeKey(anchor) {
@@ -177,6 +183,7 @@ function buildMatchDigest({ matchMeta = {}, anchors = [], links = [], keyItemTim
     .map(slimAnchor);
 
   return {
+    schema_version: DIGEST_SCHEMA_VERSION,
     meta: {
       hero:     matchMeta.hero ?? null,
       result:   matchMeta.result ?? null,
@@ -212,4 +219,5 @@ module.exports = {
   buildMatchDigest,
   assembleChains,
   RULE_ENDPOINTS,
+  DIGEST_SCHEMA_VERSION,
 };

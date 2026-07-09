@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dota-ai-coach.local/schemas/matchDigest.schema.json",
+  "title": "Match Digest",
+  "$comment": "Structural contract for buildMatchDigest() output (server/matchDigest.js). Deliberately additionalProperties:false everywhere -- the whole point of this file is to catch structural drift, including a new anchor-link rule (A5+) that forgets to update the evidence union below. If you intentionally add/rename/retype a field, update this schema in the same change -- see CLAUDE.md 'Match Digest > Schema 契约' for the full checklist (rule function / RULE_ENDPOINTS / frontend RELATION_META / this schema). Pure additions still require a schema edit (strict mode) but do not require bumping schema_version; breaking changes (removed field, changed type, changed enum) require both.",
+  "type": "object",
+  "required": ["schema_version", "meta", "causal_chains", "standalone_anchors", "stats", "warnings"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "meta": { "$ref": "#/$defs/meta" },
+    "causal_chains": { "type": "array", "items": { "$ref": "#/$defs/chain" } },
+    "standalone_anchors": { "type": "array", "items": { "$ref": "#/$defs/slimAnchor" } },
+    "stats": { "$ref": "#/$defs/stats" },
+    "warnings": { "type": "array", "items": { "type": "string" } }
+  },
+
+  "$defs": {
+    "kind":     { "enum": ["death", "momentum", "spike", "pace"] },
+    "severity": { "enum": ["critical", "danger", "warning", "info", "success"] },
+    "confidence": { "enum": ["strong", "medium", "weak"] },
+    "rule":     { "enum": ["A1", "A2", "A3", "A4"] },
+    "relation": { "enum": ["death_triggered_collapse", "death_delayed_spike", "death_chain", "deficit_forced_death"] },
+    "anchorType": {
+      "$comment": "Union of every scanner-produced anchor `type` value: death->hero_death; momentum->momentum_loss|momentum_gain; spike->spike_lead|spike_deficit; pace->pace_deficit|pace_recovered. See anchorChain.js mapping functions.",
+      "enum": ["hero_death", "momentum_loss", "momentum_gain", "spike_lead", "spike_deficit", "pace_deficit", "pace_recovered"]
+    },
+    "result": { "enum": ["胜利", "失败", "未知", "进行中"] },
+    "grade":  { "enum": ["优秀", "良好", "一般", "需改进"] },
+
+    "slimAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gameTime", "minute", "kind", "type", "severity", "summary"],
+      "properties": {
+        "gameTime": { "type": "number", "$comment": "seconds; may be negative for pre-creep-spawn events" },
+        "minute":   { "type": "integer" },
+        "kind":     { "$ref": "#/$defs/kind" },
+        "type":     { "$ref": "#/$defs/anchorType" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "summary":  { "type": "string" }
+      }
+    },
+
+    "evidenceA1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_seconds", "death_severity", "chain_deaths", "economy_significant", "lethal", "slope_after", "magnitude"],
+      "properties": {
+        "gap_seconds":         { "type": "number" },
+        "death_severity":      { "enum": ["critical", "danger"] },
+        "chain_deaths":        { "type": "integer", "minimum": 0 },
+        "economy_significant": { "type": "boolean" },
+        "lethal":              { "type": "boolean" },
+        "slope_after":         { "type": "number" },
+        "magnitude":           { "type": "number" }
+      }
+    },
+    "evidenceA2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_seconds", "economy_delta", "economy_significant", "had_buyback", "my_item", "my_item_time", "enemy_item", "enemy_item_time"],
+      "properties": {
+        "gap_seconds":         { "type": "number" },
+        "economy_delta":       { "type": ["number", "null"] },
+        "economy_significant": { "type": "boolean" },
+        "had_buyback":         { "type": "boolean" },
+        "my_item":             { "type": "string" },
+        "my_item_time":        { "type": "number" },
+        "enemy_item":          { "type": ["string", "null"] },
+        "enemy_item_time":     { "type": ["number", "null"] }
+      }
+    },
+    "evidenceA3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_seconds", "first_death_lethal", "first_death_number", "second_death_number"],
+      "properties": {
+        "gap_seconds":         { "type": "number" },
+        "first_death_lethal":  { "type": "boolean" },
+        "first_death_number":  { "type": ["integer", "null"] },
+        "second_death_number": { "type": ["integer", "null"] }
+      }
+    },
+    "evidenceA4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gap_seconds", "deficit_gap", "enemy_hero", "no_trade", "recovered_at"],
+      "properties": {
+        "gap_seconds":  { "type": "number" },
+        "deficit_gap":  { "type": "integer" },
+        "enemy_hero":   { "type": "string" },
+        "no_trade":     { "type": "boolean" },
+        "recovered_at": { "type": ["number", "null"] }
+      }
+    },
+
+    "link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "rule", "relation", "confidence", "evidence"],
+      "properties": {
+        "from":       { "type": "number" },
+        "to":         { "type": "number" },
+        "rule":       { "$ref": "#/$defs/rule" },
+        "relation":   { "$ref": "#/$defs/relation" },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "evidence":   { "type": "object" }
+      },
+      "$comment": "Discriminated union on `rule`: each rule pins both `relation` (via const) and the shape of `evidence` (via the matching evidence$defs entry). Adding rule A5 means adding a fifth if/then branch here in the same change that adds ruleA5/RULE_ENDPOINTS.A5/RELATION_META.A5.",
+      "allOf": [
+        {
+          "if":   { "properties": { "rule": { "const": "A1" } }, "required": ["rule"] },
+          "then": { "properties": { "relation": { "const": "death_triggered_collapse" }, "evidence": { "$ref": "#/$defs/evidenceA1" } } }
+        },
+        {
+          "if":   { "properties": { "rule": { "const": "A2" } }, "required": ["rule"] },
+          "then": { "properties": { "relation": { "const": "death_delayed_spike" }, "evidence": { "$ref": "#/$defs/evidenceA2" } } }
+        },
+        {
+          "if":   { "properties": { "rule": { "const": "A3" } }, "required": ["rule"] },
+          "then": { "properties": { "relation": { "const": "death_chain" }, "evidence": { "$ref": "#/$defs/evidenceA3" } } }
+        },
+        {
+          "if":   { "properties": { "rule": { "const": "A4" } }, "required": ["rule"] },
+          "then": { "properties": { "relation": { "const": "deficit_forced_death" }, "evidence": { "$ref": "#/$defs/evidenceA4" } } }
+        }
+      ]
+    },
+
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "span", "anchors", "links", "anchor_count", "link_count", "max_confidence", "is_multi_hop"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^chain_[0-9]+$" },
+        "span": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["start", "end"],
+          "properties": {
+            "start": { "type": "number" },
+            "end":   { "type": "number" }
+          }
+        },
+        "anchors":       { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/slimAnchor" } },
+        "links":         { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/link" } },
+        "anchor_count":  { "type": "integer", "minimum": 2 },
+        "link_count":    { "type": "integer", "minimum": 1 },
+        "max_confidence": { "$ref": "#/$defs/confidence" },
+        "is_multi_hop":  { "type": "boolean" }
+      }
+    },
+
+    "kda": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kills", "deaths", "assists"],
+      "properties": {
+        "kills":   { "type": ["integer", "null"] },
+        "deaths":  { "type": ["integer", "null"] },
+        "assists": { "type": ["integer", "null"] }
+      }
+    },
+
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hero", "result", "duration", "kda", "gpm", "xpm", "grade"],
+      "properties": {
+        "hero":     { "type": ["string", "null"], "$comment": "free-form: profile key or npc_dota_hero_xxx internal name, not an enum" },
+        "result":   { "anyOf": [ { "$ref": "#/$defs/result" }, { "type": "null" } ] },
+        "duration": { "type": ["integer", "null"] },
+        "kda":      { "$ref": "#/$defs/kda" },
+        "gpm":      { "type": ["number", "null"] },
+        "xpm":      { "type": ["number", "null"] },
+        "grade":    { "anyOf": [ { "$ref": "#/$defs/grade" }, { "type": "null" } ] }
+      }
+    },
+
+    "deathsSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "pre_key_item", "in_power_spike", "no_tp"],
+      "properties": {
+        "total":          { "type": ["integer", "null"] },
+        "pre_key_item":   { "type": ["integer", "null"] },
+        "in_power_spike": { "type": ["integer", "null"], "$comment": "always null today -- no aggregate column exists in `matches` for this; see CLAUDE.md" },
+        "no_tp":          { "type": ["integer", "null"], "$comment": "always null today -- same reason as in_power_spike" }
+      }
+    },
+
+    "keyItemTiming": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "match_id", "item_name", "completed", "completed_time", "deaths_before_completion", "power_spike_used", "created_at"],
+      "properties": {
+        "id":                        { "type": "integer" },
+        "match_id":                  { "type": "string" },
+        "item_name":                 { "type": "string" },
+        "completed":                 { "enum": [0, 1] },
+        "completed_time":            { "type": ["number", "null"] },
+        "deaths_before_completion":  { "type": "integer", "minimum": 0 },
+        "power_spike_used":          { "type": ["integer", "null"] },
+        "created_at":                { "type": "string" }
+      }
+    },
+
+    "stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["deaths_summary", "key_item_timings"],
+      "properties": {
+        "deaths_summary":   { "$ref": "#/$defs/deathsSummary" },
+        "key_item_timings": { "type": "array", "items": { "$ref": "#/$defs/keyItemTiming" } }
+      }
+    }
+  }
+}
