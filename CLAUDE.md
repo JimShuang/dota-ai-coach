@@ -6,7 +6,9 @@ Project guide for Claude Code. Update this file after every significant feature.
 
 ## Constraints (non-negotiable)
 
-- **No LLM API calls** — all coaching is rule-based.
+- **LLM usage is layered, not blanket-banned:**
+  - **Real-time GSI pipeline: stays pure rule-based, never calls an LLM. This is a hard line, not subject to revision.** Every rule in `rules.js`/`rules/*.js` and every live alert/event stays deterministic.
+  - **Post-game analysis layer:** `matchDigest.js` exists to be the eventual input to an AI review. Current stage (**Route A**) only generates prompt *text* (`reviewPromptBuilder.js`) for the user to paste into an external AI themselves — **the server never calls an LLM API**. A future Route B (server-side LLM call) requires separate, explicit authorization before being built — see **AI Review (Route A)** section.
 - **No game memory reads, CV/OCR, or replay parsing.**
 - **No automatic game control.**
 - **Only allowed inputs:** Dota 2 GSI (HTTP POST to localhost:3000), user manual config, local rule system.
@@ -75,6 +77,7 @@ dashApp (Express, port 3001)         ← serves REST API to frontend
 | `server/anchorChain.js` | Pure convergence layer: maps the four anchor scanner outputs to a unified `Anchor` shape and merges into a time-ordered chain. Never imports the scanners — receives their output as parameters. |
 | `server/anchorLinker.js` | Pure link detector: `isLethalDeath()`, `scoreA1()`, `ruleA1()` — links death anchors to following momentum_loss anchors; `scoreA2()`, `ruleA2()` — links death anchors to following spike_deficit anchors; `scoreA3()`, `ruleA3()` — links death anchors to following death anchors (chain death); `scoreA4()`, `ruleA4()` — links significant pace_deficit anchors to a following death still within the open deficit episode; `linkAllAnchors()` — dispatcher running all rules over every anchor pair; exports `GAP_THRESHOLD`, `A2_MAX_GAP`, `A3_MAX_GAP`, `A3_QUICK_GAP`, `A4_MAX_GAP`, `A4_NEAR_GAP`. |
 | `server/matchDigest.js` | Pure digest assembly layer: `buildMatchDigest()` — turns anchors + links + match meta + key item timings into a single structured object (`schema_version` / meta / causal_chains / standalone_anchors / stats / warnings), validated against `server/schemas/matchDigest.schema.json`. This is the intended future input to an AI post-game review — no LLM call happens here, and none is planned in this module. |
+| `server/reviewPromptBuilder.js` | Route A: AI 复盘 prompt 构造，无 LLM 调用. Pure: `buildReviewPrompt(digest)` — assembles a paste-ready Chinese prompt string (role/task + field guide + digest JSON + output requirements incl. anti-hallucination constraints) for the user to copy into an external AI. No I/O, no network call, no LLM API call. |
 
 ---
 
@@ -373,11 +376,12 @@ server/tests/
   anchorLinker.test.js                229 assertions — decoupling (no scanner imports); A1: isLethalDeath (chainDeaths / economy / critical / null-context edge cases), scoreA1 (all four quadrants including OD-import reaching strong), ruleA1 (three gates, link shape, evidence fields chain_deaths/economy_significant/lethal, score consistency); A2: scoreA2 (four quadrants incl. OD-import reachability via econSignificant alone), ruleA2 (three gates, costlyEnough domain check, myTime-after-death domain check, link shape, evidence fields, does not interfere with ruleA1, rejects kind='pace' anchorB); A3: scoreA3 (three tiers incl. OD-import reachability via isLethalDeath), ruleA3 (two gates, deathNumber/deathsAtDeath fallback, link shape, evidence fields, multi-death chain d1→d2/d2→d3/d1→d3); A4: scoreA4 (three tiers), ruleA4 (three gates, recoveredAt domain check ★ incl. before/at/after-death and never-recovered cases, no_trade signal incl. defensive missing-context read, link shape, evidence fields, multi-death, non-interference with A1-A3); linkAllAnchors (degenerate inputs, all four rules fire independently with correct relation/from/to, no cross-rule interference, A4 surfaced end-to-end via the dispatcher)
   matchDigest.test.js                  64 assertions — RULE_ENDPOINTS shape; endpoint resolution (A3 death→death distinct anchors, same-gameTime different-kind disambiguation, unresolvable link → warning not throw, unknown rule → warning); chain assembly (single link, shared-anchor multi-hop merge, branching fan-out, disjoint groups sorted by span.start, max_confidence strong-beats-weak); standalone anchors + slimming (unlinked anchors only, sorted, no detail field on digest anchors, link.evidence preserved verbatim); boundary conditions (links empty, anchors empty, full meta/stats passthrough incl. grade=overall_grade, missing-field → null, no-args call)
   matchDigestSchema.test.js            21 assertions — ajv (draft 2020-12) compiles server/schemas/matchDigest.schema.json without error; full-shape digest (all four rules + multi-hop chain + standalone anchors + negative gameTime) validates; empty-match and no-args digests validate; negative fixtures confirm strictness actually rejects: extra top-level property, illegal confidence enum, A1 link with A2-shaped evidence, mismatched rule/relation pairing, chain missing anchors / <2 anchors / 0 links, malformed chain id, out-of-enum result/grade, leaked detail field on a slim anchor, wrong schema_version, key_item_timings row missing a required field, deaths_summary extra key
+  reviewPromptBuilder.test.js          28 assertions — four-section structure present (role/task keywords, field-guide keywords incl. all four relation types + confidence tone ladder wording, fenced ```json block, anti-hallucination constraint phrases incl. multi-hop-priority instruction); embedded JSON round-trips via JSON.parse to a deep-equal copy of the input digest; exported section constants carry the safety-critical wording (regression pin); empty-causal_chains digest still produces a normal, non-throwing prompt with a round-trippable JSON block
 ```
 
 Run with: `node server/tests/<file>.test.js`
 
-All 1485 assertions must pass before merging any change.
+All 1513 assertions must pass before merging any change.
 
 ---
 
@@ -1343,6 +1347,60 @@ No UI consumes this endpoint yet — the existing anchor-chain timeline and 逻�
 
 ---
 
+## AI Review (Route A)
+
+The first consumer of Match Digest. Generates a paste-ready prompt for an external AI to write a Chinese post-game review narrative. **The server does not call any LLM API — the user copies the prompt text and pastes it into an AI of their own choosing.** Implemented in `server/reviewPromptBuilder.js`: pure, no I/O, no network call.
+
+### Why "Route A"
+
+Two ways this could eventually work:
+- **Route A (implemented here):** server assembles a prompt string; user pastes it into ChatGPT/Claude/whatever themselves. Zero server-side LLM integration, zero API keys, zero cost, zero new attack surface.
+- **Route B (not implemented, not authorized):** server calls an LLM API directly and returns a generated narrative. This would be a genuine exception to the "no LLM API calls" boundary and requires **separate, explicit user authorization** before any code is written for it — see **Constraints (non-negotiable)** at the top of this file. Nothing in this feature moves the project toward Route B automatically; the two are architecturally independent (Route A's output is plain text a human copies, not something any code path here feeds into an API call).
+
+### Prompt structure (`buildReviewPrompt(digest) → string`)
+
+Four sections, each its own module-level constant/function so they can be tested and tuned independently:
+
+1. **角色与任务** (`ROLE_SECTION`) — casts the AI as a Dota 2 review coach; states the input is a structured, rule-engine-verified summary (not the AI's own observation), and the task is a Chinese narrative review.
+2. **字段说明** (`FIELD_GUIDE_SECTION`) — hand-written plain-language guide to the digest shape (not the raw JSON schema): what `meta`/`causal_chains`/`standalone_anchors`/`stats`/`link.evidence` mean, what each anchor `kind` and link `relation` represents, and — critically — the **confidence tone ladder**.
+3. **比赛复盘数据（JSON）** — `JSON.stringify(digest, null, 2)` embedded verbatim in a fenced ```` ```json ```` block. The AI reads the actual digest, not a paraphrase of it.
+4. **输出要求** (`OUTPUT_REQUIREMENTS_SECTION`) — the four-part output structure (overall pacing → causal chain narration, multi-hop chains first, ordered by `span` → up to 3 standalone moments → exactly one evidence-backed improvement point) plus the anti-hallucination constraints below.
+
+### Confidence tone ladder (enforced by prompt text, not code)
+
+| `link.confidence` | Permitted phrasing |
+|---|---|
+| `strong` | Assertive causal language ("导致"/"引发") |
+| `medium` | Hedged causal language ("很可能推动了"/"可能促成了") |
+| `weak` | Correlation only ("可能相关") — **no causal claim** |
+
+This mapping exists only as instruction text inside the prompt — `reviewPromptBuilder.js` has no way to enforce it once the prompt leaves this codebase. It is load-bearing for review quality, which is why `reviewPromptBuilder.test.js` pins the literal Chinese phrases with dedicated assertions (a regression here is invisible in code review otherwise).
+
+### Anti-hallucination constraints (in `OUTPUT_REQUIREMENTS_SECTION`)
+
+- Only cite anchors/links/stats that actually exist in the digest — never invent match details (a teamfight, an item purchase, a map event) absent from the data.
+- Every concrete claim must trace back to a specific anchor (with `gameTime`) or a link's `evidence` field.
+- Strictly follow the confidence tone ladder above — never escalate wording.
+- Explicitly say "数据未覆盖" (not covered by the data) for anything the digest doesn't capture (laning details, ward placement, teamfight positioning) — never guess.
+- If a match has few anchors/chains, say so honestly ("这场比赛可分析的关键时刻较少") rather than padding out a narrative.
+
+### Boundary conditions
+
+- `causal_chains` empty → prompt still builds normally; the field guide and output requirements sections are unconditional text, so the AI naturally leans on `standalone_anchors`/`stats` instead.
+- Digest missing optional fields (nulls throughout, per the schema) → the builder never throws; it only ever does `JSON.stringify` + string concatenation, no field-by-field branching.
+
+### API
+
+| Method | Route | Effect |
+|--------|-------|--------|
+| `GET` | `/api/history/matches/:matchId/review-prompt` | Returns `{ prompt, char_count }`. Reuses the same digest computation as `/digest` (`computeDigest(detail)` in `server/index.js`) — no duplicate anchors/links logic. 404 if match not found; degrades identically to `/digest` for un-parsed/GSI-only matches (still returns a valid prompt, just with sparser digest content). |
+
+### Frontend (`MatchHistory.jsx`)
+
+A **「📋 复制 AI 复盘 Prompt」** button sits above the 关键时刻 anchor-chain block in match detail (always rendered — the prompt builds fine even with an empty anchor chain). Click → `fetch` the endpoint → `navigator.clipboard.writeText(prompt)` → button text becomes `已复制（{char_count} 字）` for 2 seconds, then reverts. Fetch or clipboard failure → button briefly shows `复制失败` (2s), no alert/dialog. State is local (`copyPromptState`, one of `idle | loading | copied:N | error`) — nothing persisted.
+
+---
+
 ## Future roadmap
 
 ### Near-term
@@ -1387,6 +1445,7 @@ dota-ai-coach/
 │   ├── anchorChain.js                 ← Pure convergence layer: deathToAnchor / momentumToAnchor / spikeToAnchor / paceToAnchor + buildAnchorChain()
 │   ├── anchorLinker.js                ← Pure link detector: isLethalDeath / scoreA1 / ruleA1 / scoreA2 / ruleA2 / scoreA3 / ruleA3 / scoreA4 / ruleA4 / linkAllAnchors + GAP_THRESHOLD / A2_MAX_GAP / A3_MAX_GAP / A3_QUICK_GAP / A4_MAX_GAP / A4_NEAR_GAP
 │   ├── matchDigest.js                 ← Pure digest assembly: buildMatchDigest() — anchors+links+meta+timings → { schema_version, meta, causal_chains, standalone_anchors, stats, warnings }; future AI-review input, no LLM call
+│   ├── reviewPromptBuilder.js         ← Route A: buildReviewPrompt(digest) → paste-ready Chinese AI-review prompt string; no LLM call, no network
 │   ├── coach.db                       ← SQLite database (auto-created)
 │   ├── schemas/
 │   │   └── matchDigest.schema.json    ← JSON Schema (draft 2020-12) contract for buildMatchDigest() output; strict (additionalProperties:false throughout), evidence discriminated union keyed on link.rule
@@ -1421,6 +1480,7 @@ dota-ai-coach/
 │       ├── anchorLinker.test.js                 ← 229 assertions (decoupling, isLethalDeath, scoreA1/ruleA1, scoreA2/ruleA2, scoreA3/ruleA3, scoreA4/ruleA4 gates + recoveredAt domain check + evidence, linkAllAnchors dispatcher incl. A4 end-to-end)
 │       ├── matchDigest.test.js                  ← 64 assertions (RULE_ENDPOINTS, endpoint resolution incl. same-gameTime disambiguation + unresolvable/unknown-rule warnings, chain assembly incl. multi-hop + branching + disjoint groups, standalone anchors + slimming, boundary conditions + meta/stats passthrough)
 │       ├── matchDigestSchema.test.js            ← 21 assertions (ajv 2020-12 compiles schema; full-shape + empty + no-args digests validate; negative fixtures prove strictness: extra prop, bad enum, evidence/rule mismatch, chain shape violations, out-of-enum result/grade, leaked detail, wrong schema_version, incomplete key_item_timings row, extra deaths_summary key)
+│       ├── reviewPromptBuilder.test.js          ← 28 assertions (four-section structure, confidence tone ladder wording, JSON round-trip, anti-hallucination phrases pinned, empty-causal_chains boundary)
 │       └── mockGSI.json               ← Centaur 10-min mock payload (nested format)
 └── client/src/
     ├── App.jsx                        ← 3-tab navigation (live / history / trends)

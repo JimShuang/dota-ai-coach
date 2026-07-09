@@ -238,6 +238,7 @@ function MatchDetail({ matchId, onBack, onDelete }) {
   const [expandedAnchors, setExpandedAnchors] = useState(new Set());
   const [activeLink, setActiveLink]           = useState(null);
   const [expandedCards, setExpandedCards]     = useState(new Set());
+  const [copyPromptState, setCopyPromptState] = useState('idle'); // 'idle' | 'loading' | 'copied' | 'error'
 
   useEffect(() => {
     fetch(`/api/history/matches/${matchId}`)
@@ -297,6 +298,23 @@ function MatchDetail({ matchId, onBack, onDelete }) {
     ? events.filter((e) => e.type === 'hero_death' && e.snapshot?.source === 'opendota_import').length
     : 0;
   const missingDeaths = isImport ? Math.max(0, (m.deaths || 0) - reconstructedDeaths) : 0;
+
+  // Route A: fetch the paste-ready AI review prompt and copy it to the clipboard.
+  // No LLM call happens here or on the server — see CLAUDE.md "AI Review (Route A)".
+  function handleCopyPrompt() {
+    setCopyPromptState('loading');
+    fetch(`/api/history/matches/${matchId}/review-prompt`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('fetch failed'))))
+      .then((data) => navigator.clipboard.writeText(data.prompt).then(() => data.char_count))
+      .then((charCount) => {
+        setCopyPromptState(`copied:${charCount}`);
+        setTimeout(() => setCopyPromptState('idle'), 2000);
+      })
+      .catch(() => {
+        setCopyPromptState('error');
+        setTimeout(() => setCopyPromptState('idle'), 2000);
+      });
+  }
 
   // Shared renderer for a causal link's evidence fields — driven by field
   // presence, not by which rule produced the link, so new rules (A4…)
@@ -655,6 +673,29 @@ function MatchDetail({ matchId, onBack, onDelete }) {
           </div>
         </div>
       )}
+
+      {/* Route A: copy a paste-ready AI review prompt to the clipboard. No LLM call happens
+          here or on the server — see CLAUDE.md "AI Review (Route A)". Always shown (the
+          prompt still builds fine with no causal chains — see reviewPromptBuilder.js). */}
+      <div style={{ marginBottom: '12px' }}>
+        <button
+          onClick={handleCopyPrompt}
+          disabled={copyPromptState === 'loading'}
+          style={{
+            background: copyPromptState === 'error' ? '#3d1a1a'
+              : copyPromptState.startsWith('copied') ? '#0d2b0d' : 'transparent',
+            border: `1px solid ${copyPromptState === 'error' ? '#f85149' : copyPromptState.startsWith('copied') ? '#56d364' : '#30363d'}`,
+            borderRadius: '6px', padding: '5px 12px',
+            color: copyPromptState === 'error' ? '#f85149' : copyPromptState.startsWith('copied') ? '#56d364' : '#8b949e',
+            fontSize: '12px', cursor: copyPromptState === 'loading' ? 'default' : 'pointer',
+          }}
+        >
+          {copyPromptState === 'loading' ? '生成中...'
+            : copyPromptState === 'error' ? '复制失败'
+            : copyPromptState.startsWith('copied') ? `已复制（${copyPromptState.split(':')[1]} 字）`
+            : '📋 复制 AI 复盘 Prompt'}
+        </button>
+      </div>
 
       {/* Anchor chain — 关键时刻 (empty → whole block hidden; GSI matches without timeseries silently degrade) */}
       {anchorChain.length > 0 && (

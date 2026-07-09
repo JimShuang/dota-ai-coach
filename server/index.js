@@ -13,6 +13,7 @@ const { scanSpikeWindowDeltas, scanPaceDeficits } = require('./openDotaSpikeWind
 const { buildAnchorChain } = require('./anchorChain');
 const { linkAllAnchors } = require('./anchorLinker');
 const { buildMatchDigest } = require('./matchDigest');
+const { buildReviewPrompt } = require('./reviewPromptBuilder');
 const { evaluate } = require('./rules');
 const { logEvents, getEvents, getPowerSpikeState, getSummary, getOfflanieSummary } = require('./eventLogger');
 const { normalizeItems } = require('./utils/gsiNormalizer');
@@ -316,19 +317,36 @@ app.get('/api/history/matches/:matchId/anchor-chain', (req, res) => {
   res.json({ anchors, links });
 });
 
-app.get('/api/history/matches/:matchId/digest', (req, res) => {
-  const detail = getMatchById(req.params.matchId);
-  if (!detail) return res.status(404).json({ error: 'Match not found' });
-
+// Shared orchestration: builds the full digest for a match detail row. Used by
+// both /digest and /review-prompt so the anchors+links -> digest computation
+// lives in exactly one place.
+function computeDigest(detail) {
   const { anchors, links } = computeAnchorsAndLinks(detail);
-  const digest = buildMatchDigest({
+  return buildMatchDigest({
     matchMeta:      detail.match,
     anchors,
     links,
     keyItemTimings: detail.keyItemTimings,
   });
+}
 
-  res.json(digest);
+app.get('/api/history/matches/:matchId/digest', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+  res.json(computeDigest(detail));
+});
+
+// Route A: generates paste-ready prompt TEXT for the user to copy into an
+// external AI. The server never calls an LLM here or anywhere else -- see
+// CLAUDE.md "AI Review (Route A)".
+app.get('/api/history/matches/:matchId/review-prompt', (req, res) => {
+  const detail = getMatchById(req.params.matchId);
+  if (!detail) return res.status(404).json({ error: 'Match not found' });
+
+  const digest = computeDigest(detail);
+  const prompt = buildReviewPrompt(digest);
+  res.json({ prompt, char_count: prompt.length });
 });
 
 app.get('/api/history/stats', (req, res) => {
